@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+# dist/  # 注释掉，因为我们需要包含dist目录中的可执行文件
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+# *.spec  # 注释掉，因为我们需要包含WallpaperDownloader.spec
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+screensaver_images/
+Wallpapers/
+config.json
+*.jpg
+*.png
+*.bmp

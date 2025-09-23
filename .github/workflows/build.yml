@@ -1,0 +1,51 @@
+name: Build Desktop Apps
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            pyinstaller WallpaperDownloader.spec
+            OUT=dist/WallpaperDownloader.exe
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            pyinstaller --windowed --name WallpaperDownloader --icon app_icon.ico main.py
+            OUT=dist/WallpaperDownloader/WallpaperDownloader.app
+          else
+            pyinstaller --windowed --name WallpaperDownloader --icon app_icon.ico main.py
+            OUT=dist/WallpaperDownloader
+          fi
+          echo "OUT=$OUT" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WallpaperDownloader-${{ runner.os }}
+          path: ${{ env.OUT }}

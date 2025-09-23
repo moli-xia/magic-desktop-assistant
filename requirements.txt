@@ -1,0 +1,5 @@
+ttkbootstrap>=1.10.1
+Pillow>=9.0.0
+requests>=2.25.0
+pystray>=0.19.0
+schedule>=1.2.0
