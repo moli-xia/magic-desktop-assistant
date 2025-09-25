@@ -16,6 +16,7 @@ import io
 import json
 import base64
 import tempfile
+from datetime import datetime
 from daily_news import DailyNewsManager, DailyNewsWindow
 from integrated_features import IntegratedFeaturesManager, IntegratedFeaturesWindow
 from alapi_services import ALAPIManager, ALAPIWindow
@@ -1090,6 +1091,9 @@ class WallpaperApp:
         settings_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="设置", menu=settings_menu)
         settings_menu.add_command(label="API Token设置", command=self.show_token_settings)
+        settings_menu.add_separator()
+        settings_menu.add_command(label="导出配置", command=self.export_config)
+        settings_menu.add_command(label="导入配置", command=self.import_config)
         settings_menu.add_separator()
         
         # 创建开机启动的BooleanVar
@@ -2246,6 +2250,187 @@ class WallpaperApp:
             print(f"检查Token时发生错误: {e}")  # 添加错误日志
             messagebox.showerror("错误", f"检查Token失败: {str(e)}", parent=self.root)
             return False
+
+    def collect_all_config(self):
+        """收集所有配置信息"""
+        try:
+            config_data = {
+                "export_info": {
+                    "export_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "app_version": "魔力桌面助手 v2.0",
+                    "config_version": "1.0"
+                },
+                "main_config": {
+                    "wallpaper_dir": self.wallpaper_dir,
+                    "screensaver_dir": self.screensaver_dir,
+                    "auto_screensaver_enabled": self.auto_screensaver_enabled,
+                    "idle_time_minutes": self.idle_time_minutes,
+                    "api_token": self.api_token
+                },
+                "calendar_reminders": [],
+                "daily_news_config": {},
+                "alapi_config": {},
+                "integrated_features_config": {}
+            }
+            
+            # 收集日历提醒数据
+            if hasattr(self, 'calendar_reminder_manager') and self.calendar_reminder_manager:
+                reminders_data = []
+                for reminder in self.calendar_reminder_manager.reminders.values():
+                    reminders_data.append(reminder.to_dict())
+                config_data["calendar_reminders"] = reminders_data
+            
+            # 收集每日新闻配置
+            if hasattr(self, 'daily_news_manager') and self.daily_news_manager:
+                config_data["daily_news_config"] = {
+                    "current_source": self.daily_news_manager.current_source,
+                    "notification_enabled": self.daily_news_manager.notification_enabled,
+                    "notification_time": self.daily_news_manager.notification_time,
+                    "api_sources": self.daily_news_manager.api_sources
+                }
+            
+            # 收集ALAPI配置
+            if hasattr(self, 'alapi_manager') and self.alapi_manager:
+                config_data["alapi_config"] = {
+                    "token": self.alapi_manager.get_token()
+                }
+            
+            # 收集集成功能配置
+            if hasattr(self, 'integrated_features_manager') and self.integrated_features_manager:
+                config_data["integrated_features_config"] = {
+                    "alapi_token": self.integrated_features_manager.alapi_token,
+                    "city": self.integrated_features_manager.city,
+                    "sentence_token": self.integrated_features_manager.sentence_token,
+                    "zhipu_api_key": self.integrated_features_manager.zhipu_api_key
+                }
+            
+            return config_data
+        except Exception as e:
+            print(f"收集配置信息失败: {e}")
+            return None
+
+    def export_config(self):
+        """导出配置到JSON文件"""
+        try:
+            # 收集所有配置数据
+            config_data = self.collect_all_config()
+            if not config_data:
+                messagebox.showerror("错误", "收集配置信息失败", parent=self.root)
+                return
+            
+            # 生成文件名（使用当前日期）
+            current_date = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"魔力桌面助手配置_{current_date}.json"
+            
+            # 选择保存路径
+            from tkinter import filedialog
+            filepath = filedialog.asksaveasfilename(
+                title="导出配置文件",
+                defaultextension=".json",
+                filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")],
+                initialfile=filename,
+                parent=self.root
+            )
+            
+            if filepath:
+                # 保存配置文件
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(config_data, f, ensure_ascii=False, indent=2)
+                
+                messagebox.showinfo("成功", f"配置已导出到：\n{filepath}", parent=self.root)
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"导出配置失败：{str(e)}", parent=self.root)
+
+    def import_config(self):
+        """从JSON文件导入配置"""
+        try:
+            # 选择导入文件
+            from tkinter import filedialog
+            filepath = filedialog.askopenfilename(
+                title="选择配置文件",
+                filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")],
+                parent=self.root
+            )
+            
+            if not filepath:
+                return
+            
+            # 确认导入操作
+            confirm = messagebox.askyesno(
+                "确认导入", 
+                "导入配置将覆盖当前所有设置和日历提醒数据，是否继续？",
+                parent=self.root
+            )
+            if not confirm:
+                return
+            
+            # 读取配置文件
+            with open(filepath, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            
+            # 恢复配置
+            self.restore_config(config_data)
+            
+            messagebox.showinfo("成功", "配置导入成功！请重启应用以应用所有设置。", parent=self.root)
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"导入配置失败：{str(e)}", parent=self.root)
+
+    def restore_config(self, config_data):
+        """恢复配置数据"""
+        try:
+            # 恢复主配置
+            if "main_config" in config_data:
+                main_config = config_data["main_config"]
+                self.wallpaper_dir = main_config.get("wallpaper_dir", self.wallpaper_dir)
+                self.screensaver_dir = main_config.get("screensaver_dir", self.screensaver_dir)
+                self.auto_screensaver_enabled = main_config.get("auto_screensaver_enabled", self.auto_screensaver_enabled)
+                self.idle_time_minutes = main_config.get("idle_time_minutes", self.idle_time_minutes)
+                self.api_token = main_config.get("api_token", self.api_token)
+                
+                # 保存主配置
+                self.save_config()
+            
+            # 恢复日历提醒数据
+            if "calendar_reminders" in config_data and hasattr(self, 'calendar_reminder_manager'):
+                self.calendar_reminder_manager.reminders.clear()
+                for reminder_data in config_data["calendar_reminders"]:
+                    from calendar_reminder import ReminderData
+                    reminder = ReminderData.from_dict(reminder_data)
+                    self.calendar_reminder_manager.reminders[reminder.id] = reminder
+                self.calendar_reminder_manager.save_reminders()
+            
+            # 恢复每日新闻配置
+            if "daily_news_config" in config_data and hasattr(self, 'daily_news_manager'):
+                news_config = config_data["daily_news_config"]
+                self.daily_news_manager.current_source = news_config.get("current_source", "alapi")
+                self.daily_news_manager.notification_enabled = news_config.get("notification_enabled", True)
+                self.daily_news_manager.notification_time = news_config.get("notification_time", "08:00")
+                if "api_sources" in news_config:
+                    self.daily_news_manager.api_sources = news_config["api_sources"]
+                self.daily_news_manager.save_cache()
+            
+            # 恢复ALAPI配置
+            if "alapi_config" in config_data and hasattr(self, 'alapi_manager'):
+                alapi_config = config_data["alapi_config"]
+                token = alapi_config.get("token", "")
+                if token:
+                    self.alapi_manager.set_token(token)
+            
+            # 恢复集成功能配置
+            if "integrated_features_config" in config_data and hasattr(self, 'integrated_features_manager'):
+                features_config = config_data["integrated_features_config"]
+                self.integrated_features_manager.alapi_token = features_config.get("alapi_token", "")
+                self.integrated_features_manager.city = features_config.get("city", "北京")
+                self.integrated_features_manager.sentence_token = features_config.get("sentence_token", "")
+                self.integrated_features_manager.zhipu_api_key = features_config.get("zhipu_api_key", "")
+            
+            print("配置恢复完成")
+            
+        except Exception as e:
+            print(f"恢复配置失败: {e}")
+            raise
 
     def open_calendar_reminder(self):
         """打开日历提醒窗口"""
