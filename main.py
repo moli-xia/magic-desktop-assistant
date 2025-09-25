@@ -19,6 +19,8 @@ import tempfile
 from daily_news import DailyNewsManager, DailyNewsWindow
 from integrated_features import IntegratedFeaturesManager, IntegratedFeaturesWindow
 from alapi_services import ALAPIManager, ALAPIWindow
+from calendar_reminder import CalendarReminderManager, CalendarReminderWindow
+from reminder_notification import show_reminder_notification
 
 # --- Single Instance Check ---
 def check_single_instance():
@@ -43,7 +45,7 @@ def check_single_instance():
                             buffer = ctypes.create_unicode_buffer(length + 1)
                             user32.GetWindowTextW(hwnd, buffer, length + 1)
                             window_title = buffer.value
-                            if "壁纸屏保下载器" in window_title:
+                            if "魔力桌面助手" in window_title:
                                 user32.ShowWindow(hwnd, 9)
                                 user32.SetForegroundWindow(hwnd)
                                 return False
@@ -53,9 +55,9 @@ def check_single_instance():
                 except Exception as e:
                     print(f"激活已运行实例失败: {e}")
                 try:
-                    show_center_messagebox("提示", "壁纸屏保下载器已在运行中！\n\n如果看不到窗口，请检查系统托盘。")
+                    show_center_messagebox("提示", "魔力桌面助手已在运行中！\n\n如果看不到窗口，请检查系统托盘。")
                 except Exception:
-                    print("壁纸屏保下载器已在运行中！")
+                    print("魔力桌面助手已在运行中！")
                 sys.exit(0)
             return mutex
         else:
@@ -813,11 +815,11 @@ def resource_path(relative_path):
 class WallpaperApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("壁纸屏保下载器")
+        self.root.title("魔力桌面助手")
         
         # 设置窗口大小并居中显示（增加高度确保所有内容完整显示）
         window_width = 420
-        window_height = 580  # 增加高度确保底部内容完整显示
+        window_height = 650  # 进一步增加高度确保日历提醒功能完整显示
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         x = (screen_width - window_width) // 2
@@ -865,6 +867,12 @@ class WallpaperApp:
         self.alapi_manager = ALAPIManager()
         self.alapi_window = None
         self.selected_services = []
+        
+        # 初始化日历提醒功能
+        self.calendar_reminder_manager = CalendarReminderManager(APP_DATA_DIR)
+        self.calendar_reminder_window = None
+        # 设置提醒通知回调
+        self.calendar_reminder_manager.set_notification_callback(show_reminder_notification)
         
         # 统一信息推送去重标记（记录上次推送的小时和分钟）
         self.last_info_push_minute = None
@@ -1249,8 +1257,8 @@ class WallpaperApp:
         main_frame.pack(fill=BOTH, expand=YES)
         
         # 软件名称和版本
-        ttk.Label(main_frame, text="壁纸屏保下载器", font=("Helvetica", 16, "bold"), bootstyle=PRIMARY).pack(pady=(10, 5))
-        ttk.Label(main_frame, text="v2.2.4", font=("Helvetica", 12), bootstyle=INFO).pack(pady=(0, 20))
+        ttk.Label(main_frame, text="魔力桌面助手", font=("Helvetica", 16, "bold"), bootstyle=PRIMARY).pack(pady=(10, 5))
+        ttk.Label(main_frame, text="v3.0.0", font=("Helvetica", 12), bootstyle=INFO).pack(pady=(0, 20))
         
         # 免责声明
         disclaimer_text = """免责声明：
@@ -1403,6 +1411,22 @@ class WallpaperApp:
         except Exception as _e:
             print(f"初始化默认开关失败: {_e}")
         self.info_time_entry = self.push_time_entry
+
+        # --- Calendar Reminder Section ---
+        calendar_frame = ttk.Labelframe(main_frame, text="日历提醒", padding=10)
+        calendar_frame.pack(fill=X, pady=5)
+
+        calendar_button_frame = ttk.Frame(calendar_frame)
+        calendar_button_frame.pack(pady=5, fill=X)
+        
+        ttk.Button(calendar_button_frame, text="打开日历", command=self.open_calendar_reminder, 
+                  bootstyle=WARNING).pack(side=LEFT, padx=(0, 5), expand=YES, fill=X)
+        
+        # 日历说明
+        calendar_info_frame = ttk.Frame(calendar_frame)
+        calendar_info_frame.pack(fill=X, pady=2)
+        ttk.Label(calendar_info_frame, text="点击日历可设置提醒事项，支持多种颜色分类和重复提醒", 
+                 font=("Helvetica", 8), bootstyle=SECONDARY).pack(anchor=W)
 
         ss_button_frame = ttk.Frame(ss_frame)
         ss_button_frame.pack(pady=5, fill=X)
@@ -1618,7 +1642,7 @@ class WallpaperApp:
             )
             
             # 创建托盘图标
-            self.tray_icon = pystray.Icon("wallpaper_app", image, "壁纸屏保下载器", menu)
+            self.tray_icon = pystray.Icon("wallpaper_app", image, "魔力桌面助手", menu)
             
             # 在单独线程中运行托盘图标
             self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
@@ -2222,6 +2246,18 @@ class WallpaperApp:
             print(f"检查Token时发生错误: {e}")  # 添加错误日志
             messagebox.showerror("错误", f"检查Token失败: {str(e)}", parent=self.root)
             return False
+
+    def open_calendar_reminder(self):
+        """打开日历提醒窗口"""
+        try:
+            if self.calendar_reminder_window is None or not self.calendar_reminder_window.window.winfo_exists():
+                self.calendar_reminder_window = CalendarReminderWindow(self.root, self.calendar_reminder_manager)
+            else:
+                # 如果窗口已存在，将其置前
+                self.calendar_reminder_window.window.lift()
+                self.calendar_reminder_window.window.focus_force()
+        except Exception as e:
+            messagebox.showerror("错误", f"打开日历提醒失败: {str(e)}", parent=self.root)
 
 if __name__ == "__main__":
     root = ttk.Window(themename="litera")
