@@ -25,6 +25,7 @@
 ### 🔧 系统功能
 - **系统托盘**：最小化到系统托盘运行
 - **单实例运行**：防止重复启动，重复运行会激活已有窗口
+- **开机启动**：支持设置开机自动启动，智能清理无效启动项
 - **数据持久化**：所有设置和提醒数据自动保存
 - **配置备份**：支持配置导出和导入，防止数据丢失
 
@@ -46,16 +47,111 @@ python main.py
 
 ## 📦 打包为可执行文件
 
-项目包含了完整的打包脚本，可以将程序打包为独立的exe文件：
+项目支持跨平台打包，可以将程序打包为适用于不同操作系统的独立应用程序。
 
+### 支持的平台
+
+| 平台 | 操作系统版本 | 输出格式 | 构建脚本 |
+|------|-------------|----------|----------|
+| **Windows** | Windows 10/11 | `.exe` 可执行文件 | `build_exe.py` |
+| **Linux** | Ubuntu 18.04+, CentOS 7+ | 可执行文件 + `.desktop` | `build_linux.py` |
+| **麒麟Linux** | 银河麒麟V10+, 中标麒麟7.0+ | 优化的可执行文件 | `build_kylin.py` |
+| **macOS** | macOS 10.14+ (Mojave及以上) | `.app` 应用程序包 + DMG | `build_macos.py` |
+
+### 快速打包
+
+#### 方法1：自动化构建（推荐）
 ```bash
+# 运行跨平台构建脚本
+python3 build_all_platforms.py
+```
+
+#### 方法2：单独构建特定平台
+```bash
+# Windows版本
+python build_exe.py
+
+# Linux版本  
+python3 build_linux.py
+
+# 麒麟Linux版本
+python3 build_kylin.py
+
+# macOS版本
+python3 build_macos.py
+```
+
+### 环境准备
+
+#### Windows环境
+```powershell
+# 安装依赖
+pip install -r requirements.txt
+pip install pyinstaller
+
+# 运行构建
 python build_exe.py
 ```
 
-打包后的文件将生成在 `dist/` 目录中，包含：
-- `魔力桌面助手.exe` - 主程序文件
-- `启动程序.bat` - 便捷启动脚本
-- `使用说明.txt` - 详细使用说明
+#### Linux环境
+```bash
+# 安装系统依赖
+# Ubuntu/Debian:
+sudo apt-get update
+sudo apt-get install python3-tk python3-dev build-essential libgtk-3-0
+
+# CentOS/RHEL:
+sudo yum install python3-tkinter python3-devel gcc gtk3-devel
+
+# 安装Python依赖
+python3 -m pip install -r requirements.txt
+python3 -m pip install pyinstaller
+
+# 运行构建
+python3 build_linux.py
+```
+
+#### macOS环境
+```bash
+# 安装Xcode命令行工具（如果没有）
+xcode-select --install
+
+# 安装Python依赖
+python3 -m pip install -r requirements.txt
+python3 -m pip install pyinstaller
+
+# 运行构建
+python3 build_macos.py
+```
+
+### 打包输出
+
+#### Windows版本
+```
+dist/
+├── 魔力桌面助手.exe          # 主程序
+├── 启动魔力桌面助手.bat       # 启动脚本
+└── 使用说明.txt              # 使用说明
+```
+
+#### Linux版本
+```
+dist/
+├── magic-desktop-assistant/          # 应用目录
+│   └── magic-desktop-assistant       # 可执行文件
+├── start_magic_desktop.sh           # 启动脚本
+├── 魔力桌面助手.desktop               # 桌面集成文件
+└── Linux使用说明.txt                 # 使用说明
+```
+
+#### macOS版本
+```
+dist/
+├── 魔力桌面助手.app/                  # 应用程序包
+├── 魔力桌面助手_v2.0.dmg              # DMG安装包（可选）
+├── 启动魔力桌面助手.sh                # Shell启动脚本
+└── macOS使用说明.txt                 # 使用说明
+```
 
 ## 📋 项目结构
 
@@ -128,6 +224,23 @@ desk-wallpapers/
 - **完整备份**：包含壁纸设置、API配置、日历提醒等所有数据
 - **安全导入**：导入前确认提示，避免意外覆盖数据
 
+### 开机启动功能
+- **智能设置**：自动检测并设置开机启动项
+- **路径兼容**：正确处理包含空格和中文的路径
+- **无效清理**：自动清理注册表中的无效启动项
+- **权限处理**：智能处理权限不足的情况
+- **文件验证**：确保启动文件存在且可访问
+
+#### 设置开机启动
+1. 打开魔力桌面助手
+2. 点击菜单栏 **"设置"** → **"开机启动"** 复选框
+3. 程序会自动清理无效启动项并设置正确的启动路径
+
+#### 故障排除
+- **权限问题**：右键以管理员身份运行程序
+- **杀毒软件**：部分杀毒软件可能阻止修改启动项
+- **文件移动**：移动程序后需重新设置开机启动
+
 ## 🔄 版本历史
 
 ### v2.0 (最新)
@@ -138,8 +251,9 @@ desk-wallpapers/
 - 🎯 改进提醒通知窗口
 - 💾 **新增配置导入导出功能**
 - 🔒 支持完整的数据备份和恢复
+- 🚀 **修复开机启动功能**：智能清理无效启动项，支持路径兼容
 - 🐛 修复多项用户反馈的问题
-- 📦 支持一键打包为exe文件
+- 📦 支持跨平台打包（Windows/Linux/macOS/麒麟Linux）
 
 ### v1.x
 - 基础壁纸和屏保功能

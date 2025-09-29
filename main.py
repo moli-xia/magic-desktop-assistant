@@ -1141,7 +1141,9 @@ class WallpaperApp:
         
         # 说明文字
         ttk.Label(main_frame, text="注意：信息推送功能需要有效的API Token", 
-                 font=("Helvetica", 9), bootstyle=SECONDARY).pack(pady=(5, 15))
+                 font=("Helvetica", 9), bootstyle=SECONDARY).pack(pady=(5, 5))
+        ttk.Label(main_frame, text="API网址：https://www.alapi.cn/", 
+                 font=("Helvetica", 9), bootstyle=INFO).pack(pady=(0, 15))
         
         # 按钮
         button_frame = ttk.Frame(main_frame)
@@ -1149,8 +1151,10 @@ class WallpaperApp:
         
         def save_and_close():
             self.api_token = token_entry.get().strip()
-            self.token_entry.delete(0, tk.END)
-            self.token_entry.insert(0, self.api_token)
+            # 更新主界面中的token_entry（如果存在）
+            if hasattr(self, 'token_entry'):
+                self.token_entry.delete(0, tk.END)
+                self.token_entry.insert(0, self.api_token)
             self.save_token()
             token_window.destroy()
             
@@ -1163,12 +1167,16 @@ class WallpaperApp:
     def toggle_startup_from_menu(self):
         """从菜单切换开机启动状态"""
         current_status = self.is_startup_enabled()
+        success = False
+        
         if current_status:
-            self.disable_startup()
-            self.show_center_messagebox_dialog("开机启动", "已禁用开机启动", "info")
+            success = self.set_startup(False)
+            if success:
+                self.show_center_messagebox_dialog("开机启动", "已禁用开机启动", "info")
         else:
-            self.enable_startup()
-            self.show_center_messagebox_dialog("开机启动", "已启用开机启动", "info")
+            success = self.set_startup(True)
+            if success:
+                self.show_center_messagebox_dialog("开机启动", "已启用开机启动", "info")
         
         # 更新菜单复选框状态
         if hasattr(self, 'startup_menu_var'):
@@ -1514,10 +1522,53 @@ class WallpaperApp:
             print(f"检查开机启动状态失败: {e}")
             return False
 
+    def clean_invalid_startup_entries(self):
+        """清理无效的开机启动项"""
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                               "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 
+                               0, winreg.KEY_SET_VALUE | winreg.KEY_READ)
+            
+            # 查找所有的WallpaperDownloader项（可能有重复）
+            entries_to_remove = []
+            i = 0
+            while True:
+                try:
+                    name, value, reg_type = winreg.EnumValue(key, i)
+                    if name == "WallpaperDownloader":
+                        # 检查文件是否存在
+                        clean_path = value.strip('"').split('"')[0]
+                        if not os.path.exists(clean_path):
+                            entries_to_remove.append(name)
+                            print(f"发现无效启动项: {name} -> {value}")
+                    i += 1
+                except OSError:
+                    break  # 没有更多项了
+            
+            # 删除无效项
+            for name in entries_to_remove:
+                try:
+                    winreg.DeleteValue(key, name)
+                    print(f"已删除无效启动项: {name}")
+                except Exception as e:
+                    print(f"删除启动项失败 {name}: {e}")
+            
+            winreg.CloseKey(key)
+            return len(entries_to_remove)
+            
+        except Exception as e:
+            print(f"清理启动项失败: {e}")
+            return 0
+
     def set_startup(self, enable):
         """设置或取消开机启动"""
         try:
             import winreg
+            
+            # 先清理无效的启动项
+            self.clean_invalid_startup_entries()
+            
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
                                "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 
                                0, winreg.KEY_SET_VALUE)
@@ -1525,11 +1576,16 @@ class WallpaperApp:
             if enable:
                 # 获取当前程序的完整路径
                 if getattr(sys, 'frozen', False):
-                    # 如果是打包的exe文件
-                    app_path = sys.executable
+                    # 如果是打包的exe文件，添加引号防止路径中有空格
+                    app_path = f'"{sys.executable}"'
                 else:
                     # 如果是Python脚本，使用python解释器运行
                     app_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+                
+                # 验证文件是否存在
+                clean_path = app_path.strip('"').split('"')[0]
+                if not os.path.exists(clean_path):
+                    raise FileNotFoundError(f"程序文件不存在: {clean_path}")
                 
                 winreg.SetValueEx(key, "WallpaperDownloader", 0, winreg.REG_SZ, app_path)
                 print(f"已添加开机启动: {app_path}")
@@ -1543,9 +1599,15 @@ class WallpaperApp:
             winreg.CloseKey(key)
             return True
             
+        except PermissionError:
+            error_msg = "权限不足，请以管理员身份运行程序或检查注册表权限"
+            print(f"设置开机启动失败: {error_msg}")
+            self.show_center_messagebox_dialog("权限错误", error_msg, "error")
+            return False
         except Exception as e:
-            print(f"设置开机启动失败: {e}")
-            self.show_center_messagebox_dialog("错误", f"设置开机启动失败: {e}", "error")
+            error_msg = f"设置开机启动失败: {e}"
+            print(error_msg)
+            self.show_center_messagebox_dialog("错误", error_msg, "error")
             return False
 
     def toggle_startup(self):
@@ -2225,15 +2287,15 @@ class WallpaperApp:
     def save_token(self):
         """保存API Token"""
         try:
-            token = self.token_entry.get().strip()
-            if not token:
+            # 检查是否有有效的token值
+            if not hasattr(self, 'api_token') or not self.api_token.strip():
                 show_center_messagebox("警告", "请输入有效的API Token", "warning")
                 return
             
-            self.api_token = token
+            # 保存配置
             self.save_config()
             show_center_messagebox("提示", "API Token已保存")
-            print(f"Token保存成功: {token[:10]}...")  # 添加日志输出
+            print(f"Token保存成功: {self.api_token[:10]}...")  # 添加日志输出
             
         except Exception as e:
             print(f"保存Token时发生错误: {e}")  # 添加错误日志
