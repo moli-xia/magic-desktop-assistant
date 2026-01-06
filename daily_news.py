@@ -1,6 +1,7 @@
 import requests
 import json
 import time
+import sys
 from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import messagebox, scrolledtext
@@ -10,6 +11,7 @@ import threading
 import os
 import urllib3
 import random
+import re
 
 # 禁用SSL警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -48,6 +50,12 @@ class DailyNewsManager:
         # 加载缓存数据
         self.load_cache()
         
+    def get_token(self):
+        """获取当前源的Token"""
+        if self.current_source in self.api_sources:
+            return self.api_sources[self.current_source]["token"]
+        return ""
+
     def set_token(self, token):
         """设置API token"""
         if self.current_source in self.api_sources:
@@ -119,9 +127,7 @@ class DailyNewsManager:
             }
             
             # 根据ALAPI文档，使用token参数
-            if source_name == "alapi":
-                params["token"] = "heniptlw1z24ua5pcavpcp9nnmubti"
-            elif source_config["token"]:
+            if source_config["token"]:
                 params["token"] = source_config["token"]
             
             response = requests.get(
@@ -203,6 +209,67 @@ class DailyNewsManager:
         except:
             return False
             
+    def _clean_text(self, text):
+        """彻底清理文本中的序号"""
+        if not text:
+            return ""
+        
+        clean_text = text.strip()
+        max_iterations = 10  # 防止无限循环
+        iteration = 0
+        
+        while iteration < max_iterations:
+            original = clean_text
+            
+            # 移除各种序号格式（更全面的正则表达式）
+            patterns = [
+                r'^(?:\s*\d+\s*[.、）)】]\s*){1,3}',
+                r'^\d+[.、）)】]\s*',           # 1. 2、 3） 4) 5】
+                r'^[\(（]\d+[\)）]\s*',         # (1) （2）
+                r'^【\d+】\s*',                # 【1】
+                r'^[•·▪▫◦‣⁃]\s*',             # 各种点符号
+                r'^\d+\s*[.、）)】]\s*',       # 数字后面有空格的情况
+                r'^\s*\d+[.、）)】]\s*',       # 前面有空格的情况
+                r'^第\d+[条项]\s*',            # 第1条 第2项
+                r'^\d+\s+',                   # 纯数字后面跟空格
+                r'^(?:\(\d+\)|（\d+）)\s*',
+            ]
+            
+            for pattern in patterns:
+                clean_text = re.sub(pattern, '', clean_text)
+            
+            clean_text = clean_text.strip()
+            
+            # 如果没有变化，说明清理完成
+            if clean_text == original:
+                break
+                
+            iteration += 1
+        
+        return clean_text
+
+    def get_cleaned_news(self, news_data):
+        """获取清理后的新闻列表"""
+        if not news_data:
+            return []
+            
+        news_list = news_data.get('news', [])
+        cleaned_list = []
+        
+        if isinstance(news_list, list):
+            for news_item in news_list:
+                clean_item = ""
+                if isinstance(news_item, str):
+                    clean_item = self._clean_text(news_item)
+                elif isinstance(news_item, dict):
+                    title = news_item.get('title', news_item.get('content', ''))
+                    clean_item = self._clean_text(title)
+                
+                if clean_item:
+                    cleaned_list.append(clean_item)
+                    
+        return cleaned_list
+
     def format_news_for_display(self, news_data):
         """格式化新闻数据用于显示"""
         if not news_data:
@@ -212,60 +279,9 @@ class DailyNewsManager:
         formatted_text += f"📡 数据源: {news_data.get('source', '未知')}\n"
         formatted_text += "─" * 50 + "\n\n"
         
-        import re
-        
-        def clean_text_thoroughly(text):
-            """彻底清理文本中的序号"""
-            if not text:
-                return ""
-            
-            clean_text = text.strip()
-            max_iterations = 10  # 防止无限循环
-            iteration = 0
-            
-            while iteration < max_iterations:
-                original = clean_text
-                
-                # 移除各种序号格式（更全面的正则表达式）
-                patterns = [
-                    r'^\d+[.、）)】]\s*',           # 1. 2、 3） 4) 5】
-                    r'^[\(（]\d+[\)）]\s*',         # (1) （2）
-                    r'^【\d+】\s*',                # 【1】
-                    r'^[•·▪▫◦‣⁃]\s*',             # 各种点符号
-                    r'^\d+\s*[.、）)】]\s*',       # 数字后面有空格的情况
-                    r'^\s*\d+[.、）)】]\s*',       # 前面有空格的情况
-                    r'^第\d+[条项]\s*',            # 第1条 第2项
-                    r'^\d+\s+',                   # 纯数字后面跟空格
-                ]
-                
-                for pattern in patterns:
-                    clean_text = re.sub(pattern, '', clean_text)
-                
-                clean_text = clean_text.strip()
-                
-                # 如果没有变化，说明清理完成
-                if clean_text == original:
-                    break
-                    
-                iteration += 1
-            
-            return clean_text
-        
-        news_list = news_data.get('news', [])
-        if isinstance(news_list, list):
-            for i, news_item in enumerate(news_list, 1):
-                if isinstance(news_item, str):
-                    clean_item = clean_text_thoroughly(news_item)
-                    if clean_item:
-                        formatted_text += f"{i}. {clean_item}\n\n"
-                elif isinstance(news_item, dict):
-                    # 处理字典格式的新闻项
-                    title = news_item.get('title', news_item.get('content', ''))
-                    clean_title = clean_text_thoroughly(title)
-                    if clean_title:
-                        formatted_text += f"{i}. {clean_title}\n\n"
-        else:
-            formatted_text += str(news_list)
+        cleaned_list = self.get_cleaned_news(news_data)
+        for i, item in enumerate(cleaned_list, 1):
+            formatted_text += f"{i}. {item}\n\n"
             
         return formatted_text
         
@@ -284,103 +300,138 @@ class DailyNewsManager:
         return current_time == self.notification_time
 
 
-class DailyNewsWindow:
-    def __init__(self, parent, news_manager):
-        self.parent = parent
+class NewsWidget(ttk.Frame):
+    def __init__(self, parent, news_manager, ui_after=None, **kwargs):
+        super().__init__(parent, **kwargs)
         self.news_manager = news_manager
-        self.window = None
-        
-    def show_news_window(self):
-        """显示新闻窗口"""
-        if self.window and self.window.winfo_exists():
-            self.window.lift()
-            self.window.focus_force()
-            return
-            
-        self.window = ttk.Toplevel(self.parent)
-        self.window.title("每日早报 - 60秒读懂世界")
-        # 居中显示
-        try:
-            window_width = 800
-            window_height = 600
-            screen_width = self.window.winfo_screenwidth()
-            screen_height = self.window.winfo_screenheight()
-            x = (screen_width - window_width) // 2
-            y = (screen_height - window_height) // 2
-            self.window.geometry(f"{window_width}x{window_height}+{x}+{y}")
-        except Exception:
-            self.window.geometry("800x600")
-        self.window.resizable(True, True)
-        
-        # 设置窗口图标
-        try:
-            icon_path = os.path.join(os.getenv('APPDATA'), 'WallpaperApp', 'icon.ico')
-            if os.path.exists(icon_path):
-                self.window.iconbitmap(icon_path)
-        except:
-            pass
-            
-        self.setup_news_ui()
+        self.ui_after = ui_after
+        self.setup_ui()
         self.load_news_data()
+
+    def _ui(self, ms, callback):
+        if self.ui_after:
+            try:
+                self.ui_after(ms, callback)
+                return
+            except Exception:
+                pass
+        try:
+            if threading.current_thread() is threading.main_thread():
+                self.after(ms, callback)
+        except Exception:
+            pass
         
-    def setup_news_ui(self):
+    def setup_ui(self):
         """设置新闻界面"""
-        # 主框架
-        main_frame = ttk.Frame(self.window)
-        main_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
-        
         # 标题框架
-        title_frame = ttk.Frame(main_frame)
+        title_frame = ttk.Frame(self)
         title_frame.pack(fill=X, pady=(0, 10))
         
         title_label = ttk.Label(title_frame, text="每日早报 - 60秒读懂世界", 
                                font=("Microsoft YaHei", 16, "bold"))
         title_label.pack(side=LEFT)
         
-        # 刷新按钮
-        refresh_btn = ttk.Button(title_frame, text="刷新", 
-                                command=self.refresh_news, bootstyle=PRIMARY)
-        refresh_btn.pack(side=RIGHT, padx=(10, 0))
+        # 按钮区域
+        btn_frame = ttk.Frame(title_frame)
+        btn_frame.pack(side=RIGHT)
         
-        # 设置按钮
-        settings_btn = ttk.Button(title_frame, text="设置", 
-                                 command=self.show_settings, bootstyle=SECONDARY)
-        settings_btn.pack(side=RIGHT)
+        ttk.Button(btn_frame, text="刷新", command=self.refresh_news, bootstyle=PRIMARY).pack(side=LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="设置", command=self.show_settings, bootstyle=SECONDARY).pack(side=LEFT)
+
+        self.header_frame = ttk.Frame(self)
+        self.header_frame.pack(fill=X, pady=(0, 10))
+
+        self.header_date_label = ttk.Label(self.header_frame, text="", bootstyle="info")
+        self.header_date_label.pack(side=LEFT, padx=(0, 20))
+        self.header_source_label = ttk.Label(self.header_frame, text="", bootstyle="secondary")
+        self.header_source_label.pack(side=LEFT)
         
-        # 新闻内容框架
-        content_frame = ttk.Frame(main_frame)
-        content_frame.pack(fill=BOTH, expand=True)
-        
-        # 文本框和滚动条
-        self.text_widget = tk.Text(content_frame, wrap=tk.WORD, font=("Microsoft YaHei", 12),
-                                  bg='#f8f9fa', fg='#333333', padx=20, pady=20,
-                                  selectbackground='#007acc', selectforeground='white',
-                                  relief='flat', borderwidth=0)
-        scrollbar = ttk.Scrollbar(content_frame, orient=VERTICAL, command=self.text_widget.yview)
-        self.text_widget.configure(yscrollcommand=scrollbar.set)
-        
-        self.text_widget.pack(side=LEFT, fill=BOTH, expand=True)
-        scrollbar.pack(side=RIGHT, fill=Y)
+        self._create_scroll_area()
         
         # 状态栏
-        self.status_label = ttk.Label(main_frame, text="准备就绪", 
-                                     font=("Microsoft YaHei", 9))
+        self.status_label = ttk.Label(self, text="准备就绪", font=("Microsoft YaHei", 9), bootstyle="secondary")
         self.status_label.pack(fill=X, pady=(10, 0))
+
+    def _create_scroll_area(self):
+        container = ttk.Frame(self)
+        container.pack(fill=BOTH, expand=True)
+
+        try:
+            style = ttk.Style()
+            bg = getattr(style.colors, "bg", None) or "#1E1E1E"
+            fg = getattr(style.colors, "fg", None) or "#FFFFFF"
+            selbg = getattr(style.colors, "selectbg", None) or "#3A7AFE"
+            selfg = getattr(style.colors, "selectfg", None) or "#FFFFFF"
+        except Exception:
+            bg, fg, selbg, selfg = "#1E1E1E", "#FFFFFF", "#3A7AFE", "#FFFFFF"
+
+        self.news_text = tk.Text(
+            container,
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=0,
+            relief="flat",
+            undo=False,
+            autoseparators=False,  # 禁用撤销分隔符
+            exportselection=False, # 禁止导出选中，避免卡顿
+            font=("Microsoft YaHei", 11),
+            background=bg,
+            foreground=fg,
+            selectbackground=selbg,
+            selectforeground=selfg,
+            cursor="arrow",
+            state="disabled",
+            takefocus=0,
+        )
+        self.v_scrollbar = ttk.Scrollbar(container, orient=VERTICAL, command=self.news_text.yview)
+        self.news_text.configure(yscrollcommand=self.v_scrollbar.set)
+
+        self.v_scrollbar.pack(side=RIGHT, fill=Y)
+        self.news_text.pack(side=LEFT, fill=BOTH, expand=True)
+
+        def block_interaction(_event=None):
+            return "break"
+
+        for key in [
+            "<Key>",
+            "<Button-1>",
+            "<B1-Motion>",
+            "<Double-Button-1>",
+            "<Triple-Button-1>",
+            "<Shift-Button-1>",
+            "<Control-a>",
+            "<Control-A>",
+            "<Control-c>",
+            "<Control-C>",
+            "<<Copy>>",
+            "<<Cut>>",
+            "<<Paste>>",
+            "<<Clear>>",
+        ]:
+            self.news_text.bind(key, block_interaction)
+
+    def _on_mousewheel(self, event):
+        # 此函数已不再使用，保留空实现以防万一
+        pass
+
+    def _set_news_text(self, text: str):
+        try:
+            # 临时允许编辑以写入内容
+            self.news_text.configure(state="normal")
+            self.news_text.delete("1.0", "end")
+            self.news_text.insert("1.0", text or "")
+            self.news_text.configure(state="disabled")
+        except Exception:
+            pass
         
     def load_news_data(self):
         """加载新闻数据"""
-        # 先显示缓存数据
         cached_news = self.news_manager.get_cached_news()
         if cached_news:
-            formatted_text = self.news_manager.format_news_for_display(cached_news)
-            self.text_widget.delete(1.0, tk.END)
-            self.text_widget.insert(1.0, formatted_text)
-            self.status_label.config(text=f"最后更新: {self.news_manager.last_update or '未知'}")
+            self.update_news_display({"success": True, "data": cached_news}, from_cache=True)
         else:
-            self.text_widget.delete(1.0, tk.END)
-            self.text_widget.insert(1.0, "暂无新闻数据，请点击刷新按钮获取最新新闻")
+            self._show_message("暂无新闻数据，请点击刷新按钮获取最新新闻")
             
-        # 如果今天还没更新，尝试获取最新数据
         if not self.news_manager.is_today_updated():
             self.refresh_news()
             
@@ -396,33 +447,55 @@ class DailyNewsWindow:
         
         def fetch_data():
             result = self.news_manager.fetch_daily_news()
-            
-            # 在主线程中更新UI
-            self.window.after(0, lambda: self.update_news_display(result))
+            self._ui(0, lambda: self.update_news_display(result))
             
         threading.Thread(target=fetch_data, daemon=True).start()
         
-    def update_news_display(self, result):
+    def update_news_display(self, result, from_cache=False):
         """更新新闻显示"""
-        if result["success"]:
-            formatted_text = self.news_manager.format_news_for_display(result["data"])
-            self.text_widget.delete(1.0, tk.END)
-            self.text_widget.insert(1.0, formatted_text)
-            self.status_label.config(text=f"更新成功 - {self.news_manager.last_update}")
-        else:
+        if not result["success"]:
             error_msg = result.get('message', '未知错误')
             self.status_label.config(text=f"更新失败: {error_msg}")
-            # 在文本框中显示错误信息，而不是弹出错误对话框
-            self.text_widget.delete(1.0, tk.END)
-            self.text_widget.insert(1.0, f"获取新闻失败:\n{error_msg}\n\n请检查网络连接或联系管理员。")
+            if not from_cache:
+                self._show_message(f"获取新闻失败:\n{error_msg}\n\n请检查网络连接或联系管理员。")
+            return
+
+        news_data = result["data"]
+
+        try:
+            self.header_date_label.config(text=f"📅 {news_data.get('date', '未知日期')}")
+            self.header_source_label.config(text=f"📡 数据源: {news_data.get('source', '未知')}")
+        except Exception:
+            pass
+        
+        # 新闻列表
+        cleaned_list = self.news_manager.get_cleaned_news(news_data)
+        
+        if not cleaned_list:
+            self._show_message("暂无新闻内容")
+            return
+
+        content = "\n\n".join([f"{i}. {item}" for i, item in enumerate(cleaned_list, 1)])
+        self._set_news_text(content)
+            
+        msg = f"最后更新: {self.news_manager.last_update}" if from_cache else f"更新成功 - {self.news_manager.last_update}"
+        self.status_label.config(text=msg)
+
+    def _show_message(self, message):
+        try:
+            self.header_date_label.config(text="")
+            self.header_source_label.config(text="")
+        except Exception:
+            pass
+        self._set_news_text(message)
             
     def show_settings(self):
         """显示设置窗口"""
-        settings_window = ttk.Toplevel(self.window)
+        settings_window = ttk.Toplevel(self)
         settings_window.title("早报设置")
         settings_window.geometry("400x300")
         settings_window.resizable(False, False)
-        settings_window.transient(self.window)
+        settings_window.transient(self)
         settings_window.grab_set()
         
         # API Token设置
@@ -430,7 +503,7 @@ class DailyNewsWindow:
         token_frame.pack(fill=X, padx=10, pady=10)
         
         ttk.Label(token_frame, text="ALAPI Token:").pack(anchor=W)
-        token_var = tk.StringVar(value=self.news_manager.token)
+        token_var = tk.StringVar(value=self.news_manager.get_token() or "")
         token_entry = ttk.Entry(token_frame, textvariable=token_var, width=50, show="*")
         token_entry.pack(fill=X, pady=(5, 0))
         
@@ -468,3 +541,38 @@ class DailyNewsWindow:
                    bootstyle=PRIMARY).pack(side=RIGHT)
         ttk.Button(btn_frame, text="取消", command=settings_window.destroy, 
                    bootstyle=SECONDARY).pack(side=RIGHT, padx=(0, 10))
+
+class DailyNewsWindow:
+    def __init__(self, parent, news_manager):
+        self.parent = parent
+        self.news_manager = news_manager
+        self.window = None
+        
+    def show_news_window(self):
+        """显示新闻窗口"""
+        if self.window and self.window.winfo_exists():
+            self.window.lift()
+            self.window.focus_force()
+            return
+            
+        self.window = ttk.Toplevel(self.parent)
+        self.window.title("每日早报 - 60秒读懂世界")
+        self.window.geometry("800x600")
+        self.window.resizable(True, True)
+        
+        # 设置窗口图标
+        try:
+            icon_path = os.path.join(os.getenv('APPDATA'), 'WallpaperApp', 'icon.ico')
+            if os.path.exists(icon_path):
+                self.window.iconbitmap(icon_path)
+        except:
+            pass
+            
+        # 使用 NewsWidget
+        self.news_widget = NewsWidget(self.window, self.news_manager)
+        self.news_widget.pack(fill=BOTH, expand=YES)
+        
+    # 保留 refresh_news 方法以兼容外部调用（如果有）
+    def refresh_news(self):
+        if hasattr(self, 'news_widget'):
+            self.news_widget.refresh_news()

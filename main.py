@@ -2,13 +2,17 @@ import tkinter as tk
 from tkinter import messagebox, filedialog
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
+from ttkbootstrap.scrolled import ScrolledFrame
 import requests
 import ctypes
+from ctypes import windll, byref, sizeof, c_int
 import os
 import sys
 import threading
+import queue
 import random
-from PIL import Image, ImageTk
+import math
+from PIL import Image, ImageTk, ImageDraw
 import time
 import pystray
 import subprocess
@@ -16,12 +20,82 @@ import io
 import json
 import base64
 import tempfile
+import traceback
+import faulthandler
 from datetime import datetime
-from daily_news import DailyNewsManager, DailyNewsWindow
+from daily_news import DailyNewsManager, DailyNewsWindow, NewsWidget
 from integrated_features import IntegratedFeaturesManager, IntegratedFeaturesWindow
 from alapi_services import ALAPIManager, ALAPIWindow
-from calendar_reminder import CalendarReminderManager, CalendarReminderWindow
+from calendar_reminder import CalendarReminderManager, CalendarReminderWindow, CalendarWidget
 from reminder_notification import show_reminder_notification
+from wallpaper_widget import WallpaperWidget
+from screensaver_manager import ScreensaverManager
+from screensaver_widget import ScreensaverWidget
+from alapi_widgets import InfoPushWidget
+from weather_service import WeatherService
+
+def apply_theme_to_titlebar(root):
+    """强制应用暗色/亮色标题栏 (Windows 10/11)"""
+    try:
+        if sys.platform.startswith('win'):
+            # 获取窗口句柄
+            try:
+                root.update_idletasks()
+            except Exception:
+                pass
+            hwnd = windll.user32.GetParent(root.winfo_id())
+            if hwnd == 0:
+                hwnd = root.winfo_id()
+
+            # 获取当前主题背景色
+            style = ttk.Style()
+            bg_color = style.lookup("TFrame", "background")
+            
+            # 判断是否为暗色
+            is_dark = False
+            # 优先根据主题名称判断
+            theme_name = style.theme.name
+            if 'dark' in theme_name.lower() or 'superhero' in theme_name.lower() or 'cyborg' in theme_name.lower():
+                is_dark = True
+            elif bg_color.startswith('#'):
+                r = int(bg_color[1:3], 16)
+                g = int(bg_color[3:5], 16)
+                b = int(bg_color[5:7], 16)
+                if (r + g + b) / 3 < 128:
+                    is_dark = True
+
+            value = c_int(1 if is_dark else 0)
+            try:
+                windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, byref(value), sizeof(value))
+            except Exception:
+                pass
+            try:
+                windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, byref(value), sizeof(value))
+            except Exception:
+                pass
+            
+            # 尝试设置标题栏颜色 (Windows 11 Build 22000+)
+            # DWMWA_CAPTION_COLOR = 35
+            # DWMWA_TEXT_COLOR = 36
+            try:
+                if bg_color.startswith('#'):
+                    # COLORREF is 0x00BBGGRR
+                    r = int(bg_color[1:3], 16)
+                    g = int(bg_color[3:5], 16)
+                    b = int(bg_color[5:7], 16)
+                    color_ref = r | (g << 8) | (b << 16)
+                    color_value = c_int(color_ref)
+                    windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, byref(color_value), sizeof(color_value))
+                    
+                    # 设置标题文字颜色 (暗色背景用白色文字，亮色背景用黑色文字)
+                    text_color = 0x00FFFFFF if is_dark else 0x00000000
+                    text_value = c_int(text_color)
+                    windll.dwmapi.DwmSetWindowAttribute(hwnd, 36, byref(text_value), sizeof(text_value))
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"Titlebar theme apply failed: {e}")
 
 # --- Single Instance Check ---
 def check_single_instance():
@@ -30,7 +104,7 @@ def check_single_instance():
         if sys.platform.startswith('win'):
             import ctypes
             from ctypes import wintypes
-            mutex_name = "Global\\WallpaperDownloader_SingleInstance_Mutex"
+            mutex_name = "Global\\MagicDesktopAssistant_SingleInstance_Mutex"
             kernel32 = ctypes.windll.kernel32
             mutex = kernel32.CreateMutexW(None, True, mutex_name)
             if not mutex:
@@ -63,7 +137,7 @@ def check_single_instance():
             return mutex
         else:
             # 非Windows平台：避免阻断运行，仅创建临时锁文件（不强制退出）
-            lock_path = os.path.join(tempfile.gettempdir(), 'wallpaper_downloader.lock')
+            lock_path = os.path.join(tempfile.gettempdir(), 'magic_desktop_assistant.lock')
             if not os.path.exists(lock_path):
                 with open(lock_path, 'w') as f:
                     f.write(str(os.getpid()))
@@ -140,12 +214,12 @@ def show_center_messagebox(title, message, msg_type="info"):
             title_frame.pack_propagate(False)
             
             title_label = tk.Label(title_frame, text=title, bg=border_color, 
-                                 fg="white", font=("Arial", 10, "bold"))
+                                 fg="white", font=("Microsoft YaHei", 10, "bold"))
             title_label.pack(side=tk.LEFT, padx=8, pady=5)
             
             # 关闭按钮
             close_btn = tk.Label(title_frame, text="×", bg=border_color, 
-                               fg="white", font=("Arial", 14, "bold"), cursor="hand2")
+                               fg="white", font=("Microsoft YaHei", 14, "bold"), cursor="hand2")
             close_btn.pack(side=tk.RIGHT, padx=8, pady=5)
             
             # 消息内容
@@ -153,7 +227,7 @@ def show_center_messagebox(title, message, msg_type="info"):
             content_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
             
             msg_label = tk.Label(content_frame, text=message, bg=bg_color, 
-                               font=("Arial", 10), wraplength=300, justify=tk.LEFT)
+                               font=("Microsoft YaHei", 10), wraplength=300, justify=tk.LEFT)
             msg_label.pack(expand=True)
             
             # 关闭窗口函数
@@ -798,11 +872,82 @@ ICON_DATA = base64.b64decode(
 )
 
 # --- Constants ---
-APP_DATA_DIR = os.path.join(os.getenv('APPDATA'), 'WallpaperApp')
+_appdata_base = os.getenv("APPDATA") or os.getenv("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Roaming")
+APP_DATA_DIR = os.path.join(_appdata_base, "WallpaperApp")
 CONFIG_PATH = os.path.join(APP_DATA_DIR, 'config.json')
 ICON_PATH = os.path.join(APP_DATA_DIR, 'icon.ico')
 PICTURES_DIR = os.path.join(os.path.expanduser('~'), 'Pictures')
 MAX_CACHE_SIZE = 50
+
+_FATAL_LOG_PATH = None
+_FATAL_FH = None
+
+def _log_fatal(message: str):
+    global _FATAL_FH
+    try:
+        if _FATAL_FH:
+            _FATAL_FH.write(message.rstrip() + "\n")
+            _FATAL_FH.flush()
+    except Exception:
+        pass
+
+def _install_global_crash_logging():
+    global _FATAL_LOG_PATH, _FATAL_FH
+    try:
+        os.makedirs(APP_DATA_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+    try:
+        _FATAL_LOG_PATH = os.path.join(APP_DATA_DIR, "fatal.log")
+        _FATAL_FH = open(_FATAL_LOG_PATH, "a", encoding="utf-8", buffering=1)
+        _log_fatal("=" * 80)
+        _log_fatal(datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " start")
+        _log_fatal(f"APP_DATA_DIR={APP_DATA_DIR}")
+        _log_fatal(f"sys.executable={sys.executable}")
+        _log_fatal(f"sys.argv={sys.argv}")
+    except Exception:
+        _FATAL_LOG_PATH = None
+        _FATAL_FH = None
+
+    try:
+        if _FATAL_FH:
+            faulthandler.enable(file=_FATAL_FH, all_threads=True)
+    except Exception:
+        pass
+
+    def _dump_exception(prefix: str, exc_type, exc_value, exc_tb):
+        try:
+            _log_fatal(prefix)
+            _log_fatal("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+        except Exception:
+            pass
+
+    def sys_handler(exc_type, exc_value, exc_tb):
+        _dump_exception("sys.excepthook", exc_type, exc_value, exc_tb)
+
+    try:
+        sys.excepthook = sys_handler
+    except Exception:
+        pass
+
+    try:
+        def th_handler(args):
+            _dump_exception("threading.excepthook", args.exc_type, args.exc_value, args.exc_traceback)
+        threading.excepthook = th_handler
+    except Exception:
+        pass
+
+_install_global_crash_logging()
+
+def get_startup_theme(default="litera"):
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        theme = cfg.get("current_theme") or default
+        return str(theme)
+    except Exception:
+        return default
 
 # --- Helper for PyInstaller Bundling ---
 def resource_path(relative_path):
@@ -813,39 +958,879 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+class ModernMenu(tk.Toplevel):
+    def __init__(self, master, x, y, commands):
+        super().__init__(master)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        
+        # 背景颜色
+        self.bg_color = "#2b2d30"
+        self.hover_color = "#0060c0" # 深蓝色高亮，对比度更高
+        self.fg_color = "#ffffff"
+        
+        self.configure(bg=self.bg_color)
+        
+        # 容器
+        self.container = ttk.Frame(self, padding=2) # 减小padding，更紧凑
+        self.container.pack(fill=BOTH, expand=True)
+
+        self._item_widgets = []
+        self._hover_widget = None
+        
+        # 构建菜单项
+        for i, cmd in enumerate(commands):
+            if cmd.get("type") == "separator":
+                sep = tk.Frame(self.container, height=1, bg="#454749") # 自定义分割线颜色
+                sep.pack(fill=X, pady=4, padx=5)
+                continue
+                
+            btn = tk.Label(
+                self.container,
+                text=f"  {cmd['label']}  ",
+                font=("Microsoft YaHei", 9), # 稍微调小字体
+                bg=self.bg_color,
+                fg=self.fg_color,
+                anchor="w",
+                padx=12,
+                pady=8,
+                cursor="hand2"
+            )
+            btn.pack(fill=X)
+            self._item_widgets.append(btn)
+            
+            # 绑定事件
+            func = cmd.get("command")
+            if func:
+                btn.bind("<Button-1>", lambda e, f=func: self._on_click(f))
+                
+            # 悬停效果
+            btn.bind("<Enter>", lambda e, w=btn: self._set_hover(w))
+            btn.bind("<Leave>", lambda e, w=btn: self._maybe_clear_hover(w))
+            
+        # 计算尺寸
+        self.update_idletasks()
+        w = self.container.winfo_reqwidth()
+        h = self.container.winfo_reqheight()
+        
+        # 确保不超出屏幕
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        
+        if x + w > sw: x = sw - w - 10
+        if y + h > sh: y = sh - h - 10
+        
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        
+        # 绑定失去焦点关闭
+        self.bind("<FocusOut>", lambda e: self.destroy())
+        self.bind("<Button-1>", lambda e: self.destroy()) # 点击背景也关闭
+        self.bind("<Motion>", self._on_motion, add="+")
+        self.bind("<Leave>", self._on_leave, add="+")
+        
+        self.focus_force()
+        self.grab_set()
+
+    def _set_hover(self, widget):
+        # 用户取消了悬浮变色功能
+        pass
+
+    def _maybe_clear_hover(self, widget):
+        pass
+
+    def _clear_hover(self):
+        pass
+
+    def _on_motion(self, event):
+        pass
+
+    def _on_leave(self, event):
+        pass
+
+    def _on_click(self, func):
+        self.destroy()
+        if func:
+            try:
+                func()
+            except Exception as e:
+                print(f"Menu action error: {e}")
+
+class FloatingBall:
+    def __init__(self, app, size=70, snap_threshold=40): # 稍微加大默认尺寸
+        self.app = app
+        self.root = getattr(app, "root", None)
+        self.size = int(size)
+        self.snap_threshold = int(snap_threshold)
+
+        self._dragging = False
+        self._drag_dx = 0
+        self._drag_dy = 0
+        self._phase = 0.0
+        self._anim_job = None
+        self._pulse_job = None
+        self._docked = False # 是否已吸附
+        self._dock_side = None # 'left' or 'right'
+        
+        self.skin = "future_orb" # 默认皮肤
+        
+        self._photo_image = None # 缓存当前的PhotoImage
+
+        self.window = tk.Toplevel(self.root)
+        self.window.withdraw()
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        try:
+            self.window.attributes("-toolwindow", True)
+        except Exception:
+            pass
+
+        # 使用黑色作为透明色键，避免边缘杂色
+        self._transparent_key = "#000001" 
+        try:
+            self.window.configure(bg=self._transparent_key)
+            self.window.wm_attributes("-transparentcolor", self._transparent_key)
+        except Exception:
+            # Fallback for systems not supporting transparentcolor
+            try:
+                self.window.attributes("-alpha", 0.9)
+            except Exception:
+                pass
+
+        self.canvas = tk.Canvas(
+            self.window,
+            width=self.size,
+            height=self.size,
+            highlightthickness=0,
+            bd=0,
+            bg=self._transparent_key,
+        )
+        self.canvas.pack(fill="both", expand=True)
+
+        self.canvas.bind("<ButtonPress-1>", self._on_left_down, add="+")
+        self.canvas.bind("<B1-Motion>", self._on_left_drag, add="+")
+        self.canvas.bind("<ButtonRelease-1>", self._on_left_up, add="+")
+        self.canvas.bind("<Button-3>", self._on_right_click, add="+")
+        self.canvas.bind("<Button-2>", self._on_middle_click, add="+")
+        
+        # 鼠标进入离开事件（用于Dock状态下的交互）
+        self.canvas.bind("<Enter>", self._on_mouse_enter, add="+")
+        self.canvas.bind("<Leave>", self._on_mouse_leave, add="+")
+
+        self.canvas.configure(cursor="hand2")
+
+        self._place_default()
+        self.window.deiconify()
+        self._start_pulse()
+
+    def destroy(self):
+        try:
+            if self._pulse_job is not None:
+                self.window.after_cancel(self._pulse_job)
+        except Exception:
+            pass
+        self._pulse_job = None
+        try:
+            if self._anim_job is not None:
+                self.window.after_cancel(self._anim_job)
+        except Exception:
+            pass
+        self._anim_job = None
+        try:
+            if self.window and self.window.winfo_exists():
+                self.window.destroy()
+        except Exception:
+            pass
+
+    def _place_default(self):
+        try:
+            sw = self.window.winfo_screenwidth()
+            sh = self.window.winfo_screenheight()
+        except Exception:
+            sw, sh = 1200, 800
+        x = max(0, int(sw - self.size - 20))
+        y = max(0, int((sh - self.size) * 0.3))
+        try:
+            self.window.geometry(f"{self.size}x{self.size}+{x}+{y}")
+        except Exception:
+            pass
+
+    def _cmd_show_main(self):
+        try:
+            self.app.show_from_tray()
+        except Exception:
+            pass
+
+    def _cmd_hide_main(self):
+        try:
+            self.app.hide_to_tray()
+        except Exception:
+            pass
+
+    def _cmd_open_ai(self):
+        def _do():
+            try:
+                self.app.show_from_tray()
+                self.app.show_page("ai_chat")
+                self.root.lift()
+                self.root.focus_force()
+            except Exception:
+                pass
+
+        try:
+            self.app.safe_after(0, _do)
+        except Exception:
+            self.root.after(0, _do)
+
+    def _cmd_quit(self):
+        try:
+            self.app.quit_app()
+        except Exception:
+            pass
+
+    def _set_skin(self, skin_id):
+        self.skin = skin_id
+        self._redraw()
+        
+    def _show_skin_menu(self, x, y):
+        skins = [
+            ("未来光球", "future_orb"),
+            ("霓虹脉冲", "neon_pulse"),
+            ("经典蓝", "classic_blue"),
+            ("简约白", "minimalist_white")
+        ]
+        commands = []
+        current_skin = getattr(self, 'skin', 'future_orb')
+        for label, skin_id in skins:
+            prefix = "√ " if current_skin == skin_id else "  "
+            commands.append({
+                "label": f"{prefix}{label}",
+                "command": lambda s=skin_id: self._set_skin(s)
+            })
+            
+        def _open():
+            try:
+                # 稍微错开位置
+                ModernMenu(self.window, x + 10, y + 10, commands)
+            except Exception as e:
+                print(f"Failed to open skin menu: {e}")
+
+        # 延迟一点点打开，确保前一个菜单完全销毁
+        self.app.safe_after(50, _open)
+
+    def _on_right_click(self, event):
+        # 提前捕获坐标
+        rx, ry = event.x_root, event.y_root
+        
+        commands = [
+            {"label": "显示主窗口", "command": self._cmd_show_main},
+            {"label": "隐藏主窗口", "command": self._cmd_hide_main},
+            {"type": "separator"},
+            {"label": "切换皮肤...", "command": lambda x=rx, y=ry: self._show_skin_menu(x, y)},
+            {"type": "separator"},
+            {"label": "AI 智能对话", "command": self._cmd_open_ai},
+            {"type": "separator"},
+            {"label": "退出程序", "command": self._cmd_quit}
+        ]
+        try:
+            ModernMenu(self.window, rx + 10, ry + 10, commands)
+        except Exception as e:
+            print(f"Failed to open menu: {e}")
+        return "break"
+
+    def _on_middle_click(self, event):
+        self._cmd_open_ai()
+        return "break"
+
+    def _on_left_down(self, event):
+        self._dragging = True
+        try:
+            self.window.lift()
+        except Exception:
+            pass
+        
+        # 如果是Dock状态，先恢复球形以便拖拽
+        if self._docked:
+            self._undock()
+            
+        try:
+            self._drag_dx = int(event.x)
+            self._drag_dy = int(event.y)
+        except Exception:
+            self._drag_dx = 0
+            self._drag_dy = 0
+        return "break"
+
+    def _on_left_drag(self, event):
+        if not self._dragging:
+            return
+        try:
+            x = int(event.x_root) - self._drag_dx
+            y = int(event.y_root) - self._drag_dy
+        except Exception:
+            return
+        x, y = self._clamp_to_screen(x, y)
+        try:
+            self.window.geometry(f"{self.size}x{self.size}+{x}+{y}")
+        except Exception:
+            pass
+        return "break"
+
+    def _on_left_up(self, event):
+        self._dragging = False
+        self._snap_to_edges(animated=True)
+        return "break"
+        
+    def _on_mouse_enter(self, event):
+        if self._docked:
+            # Dock状态下鼠标悬停，可以高亮或者轻微弹出（暂不改变位置，只改变颜色）
+            self._redraw(highlight=True)
+
+    def _on_mouse_leave(self, event):
+        if self._docked:
+            self._redraw(highlight=False)
+
+    def _clamp_to_screen(self, x, y):
+        try:
+            sw = self.window.winfo_screenwidth()
+            sh = self.window.winfo_screenheight()
+        except Exception:
+            sw, sh = 1200, 800
+        x = max(0, min(int(x), int(sw - self.size)))
+        y = max(0, min(int(y), int(sh - self.size)))
+        return x, y
+
+    def _get_xy(self):
+        try:
+            self.window.update_idletasks()
+            return int(self.window.winfo_x()), int(self.window.winfo_y())
+        except Exception:
+            return 0, 0
+
+    def _snap_to_edges(self, animated):
+        x, y = self._get_xy()
+        try:
+            sw = self.window.winfo_screenwidth()
+            sh = self.window.winfo_screenheight()
+        except Exception:
+            sw, sh = 1200, 800
+
+        left_gap = x
+        right_gap = sw - (x + self.size)
+        
+        # 左右吸附逻辑
+        target_x, target_y = x, y
+        should_dock = False
+        dock_side = None
+        
+        if left_gap <= self.snap_threshold:
+            target_x = 0
+            should_dock = True
+            dock_side = 'left'
+        elif right_gap <= self.snap_threshold:
+            target_x = int(sw - self.size) # 这里先吸附到球体位置，动画结束后再变形
+            should_dock = True
+            dock_side = 'right'
+            
+        # 上下限制（不吸附，只限制）
+        if y < 0: target_y = 0
+        if y > sh - self.size: target_y = sh - self.size
+
+        if should_dock:
+            # 启动动画移到边缘
+            self._animate_move(target_x, target_y, lambda: self._dock(dock_side))
+        else:
+            # 仅仅是限制在屏幕内，不需要变形
+            self._docked = False
+            self._dock_side = None
+            self._redraw()
+            if animated:
+                self._animate_move(target_x, target_y)
+            else:
+                self.window.geometry(f"{self.size}x{self.size}+{target_x}+{target_y}")
+
+    def _dock(self, side):
+        """吸附变形为条状"""
+        self._docked = True
+        self._dock_side = side
+        
+        # 变形参数
+        dock_w = 20
+        dock_h = 100
+        
+        # 计算新位置
+        x, y = self._get_xy()
+        # 保持中心点Y不变
+        center_y = y + self.size // 2
+        new_y = center_y - dock_h // 2
+        
+        sw = self.window.winfo_screenwidth()
+        
+        if side == 'left':
+            new_x = 0
+        else: # right
+            new_x = sw - dock_w
+            
+        # 更新窗口尺寸
+        self.window.geometry(f"{dock_w}x{dock_h}+{new_x}+{new_y}")
+        self.canvas.configure(width=dock_w, height=dock_h)
+        self._redraw()
+
+    def _undock(self):
+        """恢复球状"""
+        self._docked = False
+        self._dock_side = None
+        
+        # 恢复尺寸
+        self.window.geometry(f"{self.size}x{self.size}") # 位置会在drag中更新，这里只重置大小
+        self.canvas.configure(width=self.size, height=self.size)
+        self._redraw()
+
+    def _animate_move(self, tx, ty, on_complete=None):
+        try:
+            if self._anim_job is not None:
+                self.window.after_cancel(self._anim_job)
+        except Exception:
+            pass
+        self._anim_job = None
+
+        sx, sy = self._get_xy()
+        steps = 8 # 减少步数加快响应
+        dx = (tx - sx) / float(steps)
+        dy = (ty - sy) / float(steps)
+
+        state = {"i": 0}
+
+        def tick():
+            i = state["i"]
+            if i >= steps:
+                try:
+                    self.window.geometry(f"+{tx}+{ty}")
+                except Exception:
+                    pass
+                self._anim_job = None
+                if on_complete:
+                    on_complete()
+                return
+            
+            nx = int(round(sx + dx * (i + 1)))
+            ny = int(round(sy + dy * (i + 1)))
+            try:
+                self.window.geometry(f"+{nx}+{ny}")
+            except Exception:
+                pass
+            state["i"] = i + 1
+            try:
+                self._anim_job = self.window.after(16, tick)
+            except Exception:
+                self._anim_job = None
+
+        tick()
+
+    def _start_pulse(self):
+        def loop():
+            # 旋转/呼吸相位更新
+            self._phase = (self._phase + 0.1) % 6.283
+            self._redraw()
+            try:
+                self._pulse_job = self.window.after(30, loop)
+            except Exception:
+                self._pulse_job = None
+
+        loop()
+
+    def _redraw(self, highlight=False):
+        if self._docked:
+            self._draw_docked(highlight)
+        else:
+            self._draw_ball_image()
+
+    def _draw_ball_image(self):
+        """根据皮肤设置绘制悬浮球"""
+        if getattr(self, 'skin', 'future_orb') == 'neon_pulse':
+            self._draw_neon_pulse()
+        elif getattr(self, 'skin', 'future_orb') == 'classic_blue':
+            self._draw_classic_blue()
+        elif getattr(self, 'skin', 'future_orb') == 'minimalist_white':
+            self._draw_minimalist_white()
+        else:
+            self._draw_future_orb()
+
+    def _apply_binary_alpha(self, image, size):
+        """应用二值化Alpha通道以消除边缘杂色"""
+        # 缩放回原尺寸
+        image = image.resize((size, size), Image.Resampling.LANCZOS)
+        
+        bg_color_rgb = (0, 0, 1) # #000001 Key Color
+        final_image = Image.new("RGB", (size, size), bg_color_rgb)
+        
+        datas = image.getdata()
+        new_data = []
+        
+        for item in datas:
+            # item is (r, g, b, a)
+            if item[3] > 100: # 稍微放宽阈值，保留更多边缘细节
+                # 强制不透明，直接使用RGB
+                new_data.append(item[:3])
+            else:
+                # 背景
+                new_data.append(bg_color_rgb)
+        
+        final_image.putdata(new_data)
+        
+        # Convert to ImageTk
+        self._photo_image = ImageTk.PhotoImage(final_image)
+        
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, image=self._photo_image, anchor="nw")
+
+    def _draw_future_orb(self):
+        """使用PIL绘制细腻的未来光球 (Future Orb)"""
+        try:
+            # 基础配置
+            size = self.size
+            scale = 4  # 4x超采样保证内部细节平滑
+            img_size = size * scale
+            
+            # 创建画布
+            image = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            
+            cx, cy = img_size / 2, img_size / 2
+            
+            # 留出边缘空间，确保不被截断
+            margin = 2 * scale
+            max_r = img_size / 2 - margin
+            
+            # --- 设计层 ---
+            
+            # 1. 外部底盘 (Chassis) - 实心深色圆，作为抗锯齿的基底
+            chassis_color = (20, 25, 35, 255) # 深灰蓝
+            bbox_main = [cx - max_r, cy - max_r, cx + max_r, cy + max_r]
+            draw.ellipse(bbox_main, fill=chassis_color)
+            
+            # 2. 内部流光环 (Glowing Ring)
+            ring_r = max_r * 0.92
+            ring_bbox = [cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r]
+            
+            pulse = (math.sin(self._phase) + 1) / 2 # 0~1
+            ring_color = (0, 150 + int(50*pulse), 255, 255) # 动态青蓝
+            draw.ellipse(ring_bbox, outline=ring_color, width=int(4*scale))
+            
+            # 3. 核心能量球 (Core Energy)
+            core_r = max_r * 0.65
+            core_bbox = [cx - core_r, cy - core_r, cx + core_r, cy + core_r]
+            draw.ellipse(core_bbox, fill=(10, 20, 50, 255))
+            
+            # 4. 动态旋转的“电子”或“卫星” (Satellites)
+            orbit_r = max_r * 0.78
+            sat_count = 2
+            for i in range(sat_count):
+                angle = self._phase * 1.5 + (i * 3.14159) # 对称分布
+                sat_x = cx + math.cos(angle) * orbit_r
+                sat_y = cy + math.sin(angle) * orbit_r
+                sat_size = 5 * scale
+                sat_bbox = [sat_x - sat_size, sat_y - sat_size, sat_x + sat_size, sat_y + sat_size]
+                draw.ellipse(sat_bbox, fill=(255, 255, 255, 255))
+                
+            # 5. 玻璃质感高光 (Glass Highlight)
+            ref_size = 4 * scale
+            ref_x = cx - max_r * 0.4
+            ref_y = cy - max_r * 0.4
+            draw.ellipse([ref_x, ref_y, ref_x + ref_size, ref_y + ref_size], fill=(255, 255, 255, 255))
+
+            self._apply_binary_alpha(image, size)
+            
+        except Exception as e:
+            print(f"Drawing error: {e}")
+            self.canvas.delete("all")
+            self.canvas.create_oval(5, 5, self.size-5, self.size-5, fill="blue")
+
+    def _draw_neon_pulse(self):
+        """霓虹脉冲 (Neon Pulse) - 赛博朋克粉紫风格"""
+        try:
+            size = self.size
+            scale = 4
+            img_size = size * scale
+            image = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            cx, cy = img_size / 2, img_size / 2
+            margin = 2 * scale
+            max_r = img_size / 2 - margin
+
+            # 底盘 - 深紫色 (带一点渐变感)
+            chassis_color = (20, 0, 30, 255)
+            draw.ellipse([cx - max_r, cy - max_r, cx + max_r, cy + max_r], fill=chassis_color)
+
+            # 旋转的扫描弧线
+            scan_angle = math.degrees(self._phase * 1.5)
+            scan_r = max_r * 0.9
+            draw.arc([cx - scan_r, cy - scan_r, cx + scan_r, cy + scan_r], 
+                    start=scan_angle, end=scan_angle + 60, fill=(0, 255, 255, 255), width=int(3*scale))
+            
+            draw.arc([cx - scan_r, cy - scan_r, cx + scan_r, cy + scan_r], 
+                    start=scan_angle + 180, end=scan_angle + 240, fill=(255, 0, 255, 255), width=int(3*scale))
+
+            # 脉冲环 - 粉色呼吸
+            pulse = (math.sin(self._phase * 3) + 1) / 2
+            ring_color = (255, 0, 150 + int(105*pulse), 255)
+            ring_r = max_r * 0.75
+            draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], outline=ring_color, width=int(4*scale))
+            
+            # 核心 - 亮紫色 (大小呼吸)
+            core_base_r = max_r * 0.4
+            core_r = core_base_r * (0.9 + 0.2 * pulse)
+            draw.ellipse([cx - core_r, cy - core_r, cx + core_r, cy + core_r], fill=(120, 0, 180, 255))
+            
+            # 旋转十字光标
+            cursor_len = max_r * 0.25
+            cursor_angle = self._phase
+            
+            # 绘制十字 (通过计算旋转后的坐标)
+            for angle_offset in [0, math.pi/2]:
+                angle = cursor_angle + angle_offset
+                x1 = cx + math.cos(angle) * (core_r - cursor_len)
+                y1 = cy + math.sin(angle) * (core_r - cursor_len)
+                x2 = cx + math.cos(angle) * (core_r + cursor_len)
+                y2 = cy + math.sin(angle) * (core_r + cursor_len)
+                draw.line([x1, y1, x2, y2], fill=(255, 255, 255, 255), width=int(2*scale))
+
+            self._apply_binary_alpha(image, size)
+        except Exception:
+            pass
+
+    def _draw_classic_blue(self):
+        """经典蓝 (Classic Blue) - 3D质感增强"""
+        try:
+            size = self.size
+            scale = 4
+            img_size = size * scale
+            image = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            cx, cy = img_size / 2, img_size / 2
+            margin = 2 * scale
+            max_r = img_size / 2 - margin
+
+            # 模拟3D球体渐变 (从左上亮到右下暗)
+            # 使用更多层级模拟平滑渐变
+            steps = 40
+            for i in range(steps):
+                r = max_r * (1 - i/steps)
+                # 偏移圆心以模拟光照方向 (左上)
+                offset = (max_r - r) * 0.4
+                cur_cx = cx - offset
+                cur_cy = cy - offset
+                
+                # 颜色插值: 亮蓝 -> 深蓝
+                ratio = i / steps
+                # 亮部: (60, 120, 255) -> 暗部: (0, 30, 100)
+                red = int(60 * (1-ratio))
+                green = int(120 * (1-ratio) + 30 * ratio)
+                blue = int(255 * (1-ratio) + 100 * ratio)
+                
+                draw.ellipse([cur_cx - r, cur_cy - r, cur_cx + r, cur_cy + r], fill=(red, green, blue, 255))
+            
+            # 外部轮廓 (深色边框)
+            draw.ellipse([cx - max_r, cy - max_r, cx + max_r, cy + max_r], outline=(0, 20, 80, 255), width=int(1.5*scale))
+
+            # 动态高光 (呼吸效果)
+            pulse = (math.sin(self._phase * 1.5) + 1) / 2
+            hl_r = max_r * 0.25 * (0.9 + 0.1 * pulse)
+            hl_x = cx - max_r * 0.4
+            hl_y = cy - max_r * 0.4
+            
+            # 柔和高光 (通过画几个不同透明度的圆模拟)
+            draw.ellipse([hl_x, hl_y, hl_x + hl_r*1.2, hl_y + hl_r*0.9], fill=(255, 255, 255, 200))
+            draw.ellipse([hl_x + scale, hl_y + scale, hl_x + hl_r*1.2 - scale, hl_y + hl_r*0.9 - scale], fill=(255, 255, 255, 255))
+
+            # 底部反光 (Rim Light)
+            rim_start = math.radians(45)
+            rim_end = math.radians(135)
+            rim_rect = [cx - max_r*0.9, cy - max_r*0.9, cx + max_r*0.9, cy + max_r*0.9]
+            draw.arc(rim_rect, start=30, end=100, fill=(100, 200, 255, 255), width=int(3*scale))
+
+            self._apply_binary_alpha(image, size)
+        except Exception:
+            pass
+
+    def _draw_minimalist_white(self):
+        """简约白 (Minimalist White) - 增加层次感与动态"""
+        try:
+            size = self.size
+            scale = 4
+            img_size = size * scale
+            image = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            cx, cy = img_size / 2, img_size / 2
+            margin = 2 * scale
+            max_r = img_size / 2 - margin
+
+            # 1. 外层光晕环 (浅灰)
+            draw.ellipse([cx - max_r, cy - max_r, cx + max_r, cy + max_r], fill=(220, 220, 220, 255))
+            
+            # 2. 主体白底 (稍微缩小一点)
+            main_r = max_r * 0.95
+            draw.ellipse([cx - main_r, cy - main_r, cx + main_r, cy + main_r], fill=(255, 255, 255, 255))
+            
+            # 3. 动态旋转的灰色圆环段 (Loading效果)
+            ring_r = main_r * 0.85
+            start_angle = math.degrees(self._phase * 2)
+            draw.arc([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], 
+                    start=start_angle, end=start_angle + 90, fill=(180, 180, 180, 255), width=int(3*scale))
+            
+            draw.arc([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], 
+                    start=start_angle + 180, end=start_angle + 270, fill=(220, 220, 220, 255), width=int(3*scale))
+
+            # 4. 中心装饰
+            center_r = main_r * 0.35
+            # 阴影层
+            draw.ellipse([cx - center_r, cy - center_r + 2*scale, cx + center_r, cy + center_r + 2*scale], fill=(200, 200, 200, 255))
+            # 实体层
+            draw.ellipse([cx - center_r, cy - center_r, cx + center_r, cy + center_r], fill=(245, 245, 245, 255))
+            # 边框
+            draw.ellipse([cx - center_r, cy - center_r, cx + center_r, cy + center_r], outline=(150, 150, 150, 255), width=int(1.5*scale))
+            
+            # 5. 中心呼吸点
+            pulse = (math.sin(self._phase * 2) + 1) / 2
+            dot_r = center_r * 0.4 * (0.8 + 0.2*pulse)
+            draw.ellipse([cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r], fill=(50, 50, 50, 255))
+
+            self._apply_binary_alpha(image, size)
+        except Exception:
+            pass
+
+    def _draw_docked(self, highlight):
+        try:
+            self.canvas.delete("all")
+        except Exception:
+            return
+
+        w = int(self.canvas.cget("width"))
+        h = int(self.canvas.cget("height"))
+        
+        skin = getattr(self, 'skin', 'future_orb')
+        if skin == 'neon_pulse':
+            color = "#FF00FF" if not highlight else "#FF66FF"
+            bg_color = "#440044" if not highlight else "#660066"
+        elif skin == 'classic_blue':
+            color = "#0066CC" if not highlight else "#3399FF"
+            bg_color = "#003366" if not highlight else "#004488"
+        elif skin == 'minimalist_white':
+            color = "#888888" if not highlight else "#AAAAAA"
+            bg_color = "#FFFFFF" if not highlight else "#F0F0F0"
+        else:
+            color = "#3A7AFE" if not highlight else "#00D2FF"
+            bg_color = "#1B3A8A" if not highlight else "#2457D6"
+        
+        # 绘制胶囊条
+        r = w / 2.0
+        
+        # 上圆
+        self.canvas.create_oval(0, 0, w, w, fill=bg_color, outline=color, width=2)
+        # 下圆
+        self.canvas.create_oval(0, h-w, w, h, fill=bg_color, outline=color, width=2)
+        # 中间矩形
+        self.canvas.create_rectangle(0, r, w, h-r, fill=bg_color, outline="", width=0)
+        # 边框补全 (左右两条线)
+        self.canvas.create_line(0, r, 0, h-r, fill=color, width=2)
+        self.canvas.create_line(w, r, w, h-r, fill=color, width=2)
+        
+        # 装饰线条 (呼吸效果)
+        center_y = h / 2.0
+        offset = 3 * math.sin(self._phase)
+        self.canvas.create_line(w/2, center_y - 10 + offset, w/2, center_y + 10 - offset, fill="#FFFFFF", width=2, capstyle="round")
+
+    def _oval(self, cx, cy, r, outline, width, fill):
+        # Unused in new PIL implementation but kept for compatibility if needed
+        pass
+
+
 class WallpaperApp:
     def __init__(self, root):
         self.root = root
         self.root.title("魔力桌面助手")
+
+        self._ui_queue = queue.Queue()
+        self._install_tk_exception_handler()
+        self._start_ui_watchdog()
+        try:
+            self.root.after(20, self._drain_ui_queue)
+        except Exception:
+            pass
         
         # 设置窗口大小并居中显示（增加高度确保所有内容完整显示）
-        window_width = 420
-        window_height = 650  # 进一步增加高度确保日历提醒功能完整显示
+        window_width = 1100
+        window_height = 760
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         x = (screen_width - window_width) // 2
         y = (screen_height - window_height) // 2
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
         
+        os.makedirs(APP_DATA_DIR, exist_ok=True)
+        self.app_data_dir = APP_DATA_DIR
+        self.icon_path = ICON_PATH
+        
+        # Ensure icon exists before setting it
+        self.create_default_icon_in_appdata()
+        
         # 设置窗口图标
         self.set_window_icon(self.root)
-
-        os.makedirs(APP_DATA_DIR, exist_ok=True)
+        
         
         # 自动屏保相关变量初始化（在load_config之前设置默认值）
         self.auto_screensaver_enabled = False
-        self.idle_time_minutes = 5  # 默认5分钟无操作启动屏保
+        self.idle_time_minutes = 5
         self.last_activity_time = time.time()
-        self.idle_check_timer = None
-        self.screensaver_active = False
+        self.api_token = ""
+        self.ai_base_url = "https://api.openai.com/v1"
+        self.ai_api_key = ""
+        self.ai_model = "gpt-4o-mini"
+        self.ai_system_prompt = ""
+        self.wallpaper_dir = os.path.join(PICTURES_DIR, "Wallpapers")
+        self.screensaver_dir = os.path.join(PICTURES_DIR, "screensaver_images")
+        self.auto_wallpaper_change = False
+        self.wallpaper_interval_minutes = 30
+        self.current_theme = "litera"
+        self.weather_city = "自动"
+        self.ai_messages = []
+        self.ai_chat_history = []
+        self.ai_current_session_id = ""
+
+        self.load_config()
         
-        # 屏保图片管理
-        self.current_image_index = 0
-        self.used_images = set()  # 记录已使用的图片
+        # 初始化早报功能
+        self.daily_news_manager = DailyNewsManager()
+        self.daily_news_window = None
+        self.news_timer = None
         
-        self.load_config()  # 加载配置会覆盖上面的默认值
-        self.create_default_icon_in_appdata()
+        # 初始化集成功能
+        self.integrated_features_manager = IntegratedFeaturesManager()
+        service_city = getattr(self, 'weather_city', '北京')
+        if not service_city or service_city == "自动":
+            service_city = "北京"
+        self.integrated_features_manager.city = service_city
+        self.integrated_features_window = None
         
+        # 初始化ALAPI服务
+        self.alapi_manager = ALAPIManager()
+        self.alapi_manager.set_city(service_city)
+        if self.api_token:
+            self.alapi_manager.set_token(self.api_token)
+            self.daily_news_manager.set_token(self.api_token)
+            self.integrated_features_manager.set_token(self.api_token)
+            
+        self.alapi_window = None
+        self.selected_services = []
+        
+        # 初始化日历提醒功能
+        self.calendar_reminder_manager = CalendarReminderManager(self.app_data_dir, tk_root=self.root)
+        self.calendar_reminder_window = None
+        # 设置提醒通知回调
+        self.calendar_reminder_manager.set_notification_callback(show_reminder_notification)
+        
+        # 统一信息推送去重标记（记录上次推送的小时和分钟）
+        self.last_info_push_minute = None
+
         # 初始化UI
         self.setup_ui()
         
@@ -855,45 +1840,82 @@ class WallpaperApp:
         # 启动时初始化屏保图片
         self.initialize_screensaver_images()
         
-        # 初始化早报功能
-        self.daily_news_manager = DailyNewsManager()
-        self.daily_news_window = None
-        self.news_timer = None
-        
-        # 初始化集成功能
-        self.integrated_features_manager = IntegratedFeaturesManager()
-        self.integrated_features_window = None
-        
-        # 初始化ALAPI服务
-        self.alapi_manager = ALAPIManager()
-        self.alapi_window = None
-        self.selected_services = []
-        
-        # 初始化日历提醒功能
-        self.calendar_reminder_manager = CalendarReminderManager(APP_DATA_DIR)
-        self.calendar_reminder_window = None
-        # 设置提醒通知回调
-        self.calendar_reminder_manager.set_notification_callback(show_reminder_notification)
-        
-        # 统一信息推送去重标记（记录上次推送的小时和分钟）
-        self.last_info_push_minute = None
+        self.floating_ball = None
+        try:
+            self.floating_ball = FloatingBall(self)
+        except Exception as e:
+            try:
+                print(f"悬浮球初始化失败: {e}")
+            except Exception:
+                pass
+
+    def _install_tk_exception_handler(self):
+        def handler(exc_type, exc_value, exc_tb):
+            try:
+                os.makedirs(APP_DATA_DIR, exist_ok=True)
+            except Exception:
+                pass
+
+            try:
+                log_path = os.path.join(APP_DATA_DIR, "tk_crash.log")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write("\n" + "=" * 80 + "\n")
+                    f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n")
+                    f.write("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+            except Exception:
+                log_path = None
+
+            try:
+                _log_fatal("tk.report_callback_exception")
+                _log_fatal("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+            except Exception:
+                pass
+
+            try:
+                msg = f"{exc_value}"
+                if log_path:
+                    msg = msg + f"\n\n已写入日志: {log_path}"
+                messagebox.showerror("程序错误", msg, parent=self.root)
+            except Exception:
+                pass
+
+        try:
+            self.root.report_callback_exception = handler
+        except Exception:
+            pass
+
+    def _start_ui_watchdog(self):
+        if not _FATAL_FH:
+            return
+
+        def kick():
+            try:
+                faulthandler.cancel_dump_traceback_later()
+            except Exception:
+                pass
+            try:
+                faulthandler.dump_traceback_later(15, file=_FATAL_FH)
+            except Exception:
+                pass
+            try:
+                self.root.after(3000, kick)
+            except Exception:
+                pass
+
+        kick()
+
 
     def initialize_screensaver_images(self):
         """启动时初始化屏保图片，确保至少有一张有效图片"""
         def download_first_image():
             try:
-                # 加载现有图片并验证
-                self.load_cached_images()
-                
-                # 如果没有有效图片，下载第一张
-                if not self.screensaver_images:
-                    print("屏保文件夹为空，开始下载第一张图片...")
-                    success = self.download_single_screensaver_image()
+                if not hasattr(self, 'screensaver_manager'):
+                    return
+                self.screensaver_manager.load_cached_images()
+                if not self.screensaver_manager.screensaver_images:
+                    success = self.screensaver_manager.download_single_screensaver_image()
                     if success:
-                        self.load_cached_images()  # 重新加载以包含新下载的图片
-                        print("第一张屏保图片下载完成")
-                    else:
-                        print("下载第一张屏保图片失败")
+                        self.screensaver_manager.load_cached_images()
             except Exception as e:
                 print(f"初始化屏保图片失败: {e}")
         
@@ -902,173 +1924,328 @@ class WallpaperApp:
 
     def set_window_icon(self, window):
         """为窗口设置图标"""
-        print("开始设置窗口图标...")
+        # print("开始设置窗口图标...")
         
+        # 确定图标路径优先级
+        possible_paths = []
+        try:
+            rp = resource_path("app_icon.ico")
+            if os.path.exists(rp):
+                possible_paths.append(os.path.abspath(rp))
+        except Exception:
+            pass
+
+        if os.path.exists("app_icon.ico"):
+            possible_paths.append(os.path.abspath("app_icon.ico"))
+        if hasattr(self, 'icon_path') and self.icon_path:
+            possible_paths.append(self.icon_path)
+        if os.path.exists(ICON_PATH):
+            possible_paths.append(ICON_PATH)
+            
+        icon_path = None
+        for p in possible_paths:
+            if os.path.exists(p):
+                icon_path = p
+                break
+        
+        if not icon_path:
+            # print("❌ 未找到图标文件")
+            return
+
         # 方法1: 直接使用iconbitmap设置
         try:
-            if os.path.exists("app_icon.ico"):
-                icon_path = os.path.abspath("app_icon.ico")
-                print(f"找到图标文件: {icon_path}")
-                window.iconbitmap(icon_path)
-                print("✓ iconbitmap方法设置成功")
-                
-                # 强制刷新窗口
-                window.update_idletasks()
-                window.update()
-                
-                # 延迟后再次设置以确保生效
-                def delayed_icon_set():
-                    try:
-                        window.iconbitmap(icon_path)
-                        print("✓ 延迟iconbitmap设置成功")
-                    except Exception as e:
-                        print(f"延迟iconbitmap设置失败: {e}")
-                
-                window.after(100, delayed_icon_set)
-                
-            else:
-                print("❌ 未找到app_icon.ico文件")
-                return
+            window.iconbitmap(icon_path)
+            # print("✓ iconbitmap方法设置成功")
+            
+            # 强制刷新窗口
+            window.update_idletasks()
+            window.update()
+            
+            # 延迟后再次设置以确保生效
+            def delayed_icon_set():
+                try:
+                    window.iconbitmap(icon_path)
+                except Exception as e:
+                    pass
+            
+            window.after(100, delayed_icon_set)
                 
         except Exception as e:
-            print(f"❌ iconbitmap方法失败: {e}")
+            pass
+            # print(f"❌ iconbitmap方法失败: {e}")
         
         # 方法2: 使用iconphoto作为补充
         try:
-            if os.path.exists("app_icon.ico"):
-                from PIL import Image, ImageTk
-                icon_path = os.path.abspath("app_icon.ico")
-                
-                # 加载并调整图标
-                img = Image.open(icon_path)
-                
-                # 为不同尺寸创建多个图标
-                sizes = [16, 32, 48, 64]
-                photos = []
-                
-                for size in sizes:
-                    resized_img = img.resize((size, size), Image.Resampling.LANCZOS)
-                    photo = ImageTk.PhotoImage(resized_img)
-                    photos.append(photo)
-                
-                # 设置图标
-                window.iconphoto(True, *photos)
-                
-                # 保存引用避免被垃圾回收
-                window._icon_photos = photos
-                print("✓ iconphoto方法设置成功")
+            from PIL import Image, ImageTk
+            
+            # 加载并调整图标
+            img = Image.open(icon_path)
+            
+            # 为不同尺寸创建多个图标
+            sizes = [16, 32, 48, 64, 128, 256]
+            photos = []
+            
+            for size in sizes:
+                resized_img = img.resize((size, size), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(resized_img)
+                photos.append(photo)
+            
+            # 设置图标
+            window.iconphoto(True, *photos)
+            
+            # 保存引用避免被垃圾回收
+            window._icon_photos = photos
+            # print("✓ iconphoto方法设置成功")
                 
         except Exception as e:
-            print(f"❌ iconphoto方法失败: {e}")
+            pass
+            # print(f"❌ iconphoto方法失败: {e}")
+
+        if sys.platform.startswith("win"):
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+                if hwnd == 0:
+                    hwnd = window.winfo_id()
+
+                IMAGE_ICON = 1
+                LR_LOADFROMFILE = 0x0010
+                LR_DEFAULTSIZE = 0x0040
+                WM_SETICON = 0x0080
+                ICON_SMALL = 0
+                ICON_BIG = 1
+
+                hicon = ctypes.windll.user32.LoadImageW(
+                    None,
+                    icon_path,
+                    IMAGE_ICON,
+                    0,
+                    0,
+                    LR_LOADFROMFILE | LR_DEFAULTSIZE,
+                )
+                if hicon:
+                    ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon)
+                    ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon)
+                    window._hicon = hicon
+            except Exception:
+                pass
         
         # 方法3: 设置窗口属性
         try:
             # 设置窗口类名
-            window.tk.call('wm', 'class', window._w, "WallpaperDownloader")
-            print("✓ 窗口类名设置成功")
+            window.tk.call('wm', 'class', window._w, "MagicDesktopAssistant")
+            # print("✓ 窗口类名设置成功")
         except Exception as e:
-            print(f"❌ 窗口类名设置失败: {e}")
+            pass
+            # print(f"❌ 窗口类名设置失败: {e}")
             
-        print("图标设置完成")
+        # print("图标设置完成")
     
     def setup_activity_monitoring(self):
         """设置活动监听"""
         # 绑定窗口事件来检测用户活动
-        self.root.bind('<Motion>', self.on_user_activity)
-        self.root.bind('<Button>', self.on_user_activity)
-        self.root.bind('<Key>', self.on_user_activity)
-        
-        # 开始空闲检测
-        self.start_idle_check()
+        # Activity monitoring is now handled by ScreensaverManager, but we can keep general monitoring if needed.
+        # However, for screensaver purposes, ScreensaverManager does it.
+        pass
+
+    def safe_after(self, ms, callback):
+        if threading.current_thread() is threading.main_thread():
+            try:
+                if self.root.winfo_exists():
+                    self.root.after(ms, callback)
+            except Exception:
+                pass
+            return
+
+        try:
+            self._ui_queue.put_nowait((ms, callback))
+        except Exception:
+            pass
+
+    def _drain_ui_queue(self):
+        try:
+            if not self.root.winfo_exists():
+                return
+        except Exception:
+            return
+
+        start = time.time()
+        while True:
+            try:
+                ms, cb = self._ui_queue.get_nowait()
+            except Exception:
+                break
+            try:
+                if int(ms) <= 0:
+                    cb()
+                else:
+                    self.root.after(ms, cb)
+            except Exception:
+                pass
+            if (time.time() - start) > 0.01:
+                break
+
+        try:
+            if self.root.winfo_exists():
+                self.root.after(20, self._drain_ui_queue)
+        except Exception:
+            pass
     
     def on_user_activity(self, event=None):
         """用户活动回调"""
         self.last_activity_time = time.time()
-        if self.screensaver_active:
-            self.exit_screensaver()
+        # ScreensaverManager handles its own activity check
     
-    def start_idle_check(self):
-        """开始空闲检测"""
-        if self.idle_check_timer:
-            self.root.after_cancel(self.idle_check_timer)
-        
-        if self.auto_screensaver_enabled:
-            self.idle_check_timer = self.root.after(1000, self.check_idle_time)  # 每秒检查一次
-    
-    def check_idle_time(self):
-        """检查空闲时间"""
-        if self.auto_screensaver_enabled and not self.screensaver_active:
-            idle_seconds = time.time() - self.last_activity_time
-            idle_minutes = idle_seconds / 60
-            
-            if idle_minutes >= self.idle_time_minutes:
-                self.start_screensaver()
-                return
-        
-        # 继续检查
-        if self.auto_screensaver_enabled:
-            self.idle_check_timer = self.root.after(1000, self.check_idle_time)
-    
-    def toggle_auto_screensaver(self):
-        """切换自动屏保状态"""
-        self.auto_screensaver_enabled = not self.auto_screensaver_enabled
-        self.save_config()
-        
-        if self.auto_screensaver_enabled:
-            self.start_idle_check()
-            # 确保使用最新的界面输入值
-            try:
-                current_time = int(self.idle_time_var.get())
-                if current_time > 0:
-                    self.idle_time_minutes = current_time
-            except (ValueError, AttributeError):
-                pass  # 使用现有值
-            message = f"自动屏保已启用，{self.idle_time_minutes}分钟无操作后启动"
-            self.update_label(message)
-            self.root.after(50, lambda: self.force_update_label(message))
-        else:
-            if self.idle_check_timer:
-                self.root.after_cancel(self.idle_check_timer)
-                self.idle_check_timer = None
-            self.update_label("自动屏保已禁用")
-    
-    def update_idle_time(self):
-        """更新空闲时间设置"""
-        try:
-            new_time = int(self.idle_time_var.get())
-            if new_time > 0:
-                self.idle_time_minutes = new_time
-                self.save_config()
-                # 如果自动屏保已启用，更新提示信息
-                if self.auto_screensaver_enabled:
-                    message = f"自动屏保已启用，{self.idle_time_minutes}分钟无操作后启动"
-                    self.update_label(message)
-                    # 使用延迟确保消息不被覆盖
-                    self.root.after(100, lambda: self.force_update_label(message))
-                else:
-                    message = f"空闲时间已设置为 {self.idle_time_minutes} 分钟"
-                    self.update_label(message)
-                    self.root.after(100, lambda: self.force_update_label(message))
-            else:
-                self.update_label("空闲时间必须大于0分钟")
-        except ValueError:
-            self.update_label("请输入有效的数字")
 
 
 
     def force_update_label(self, text):
         """强制更新标签，防止被其他逻辑覆盖"""
-        if self.root.winfo_exists():
-            self.label.config(text=text)
+        if not getattr(self, "root", None) or not self.root.winfo_exists():
+            return
+
+        def _do():
+            try:
+                if self.root.winfo_exists():
+                    self.label.config(text=text)
+            except Exception:
+                pass
+
+        if threading.current_thread() is threading.main_thread():
+            _do()
+        else:
+            self.safe_after(0, _do)
+
+    def change_theme(self, theme_name):
+        """切换主题"""
+        if getattr(self, "current_theme", "litera") == theme_name:
+            return
+        self.current_theme = theme_name
+        self.save_config()
+        try:
+            self.update_label("正在切换主题…")
+        except Exception:
+            pass
+        self.restart_app()
+
+    def _apply_canvas_theme(self):
+        try:
+            style = ttk.Style()
+            bg = style.colors.bg
+        except Exception:
+            return
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, tk.Canvas):
+                    try:
+                        child.configure(background=bg, highlightthickness=0, bd=0)
+                    except Exception:
+                        pass
+                walk(child)
+
+        try:
+            walk(self.root)
+        except Exception:
+            pass
+
+    def _is_dark_theme(self):
+        try:
+            theme_name = str(self.root.style.theme.name).lower()
+            if "dark" in theme_name or "superhero" in theme_name or "cyborg" in theme_name:
+                return True
+        except Exception:
+            pass
+
+        try:
+            style = ttk.Style()
+            bg_color = style.lookup("TFrame", "background")
+            if isinstance(bg_color, str) and bg_color.startswith("#") and len(bg_color) >= 7:
+                r = int(bg_color[1:3], 16)
+                g = int(bg_color[3:5], 16)
+                b = int(bg_color[5:7], 16)
+                return (r + g + b) / 3 < 128
+        except Exception:
+            pass
+
+        return False
+
+    def _apply_menu_theme(self):
+        submenus = getattr(self, "_submenu_list", None)
+        menubar = getattr(self, "menubar", None)
+        if not menubar and not submenus:
+            return
+
+        try:
+            style = ttk.Style()
+            bg = getattr(style.colors, "bg", None) or style.lookup("TFrame", "background") or "#2B2B2B"
+            fg = getattr(style.colors, "fg", None) or style.lookup("TLabel", "foreground") or "#FFFFFF"
+            active_bg = getattr(style.colors, "selectbg", None) or getattr(style.colors, "primary", None) or "#3A3A3A"
+            active_fg = getattr(style.colors, "selectfg", None) or fg
+        except Exception:
+            bg, fg, active_bg, active_fg = "#2B2B2B", "#FFFFFF", "#3A3A3A", "#FFFFFF"
+
+        if not isinstance(bg, str) or not bg:
+            bg = "#2B2B2B" if self._is_dark_theme() else "#F0F0F0"
+        if not isinstance(fg, str) or not fg:
+            fg = "#FFFFFF" if self._is_dark_theme() else "#000000"
+
+        try:
+            self.root.option_add("*Menu.background", bg)
+            self.root.option_add("*Menu.foreground", fg)
+            self.root.option_add("*Menu.activeBackground", active_bg)
+            self.root.option_add("*Menu.activeForeground", active_fg)
+            self.root.option_add("*Menu.relief", "flat")
+            self.root.option_add("*Menu.borderWidth", 0)
+        except Exception:
+            pass
+
+        menus = []
+        if menubar:
+            menus.append(menubar)
+        menus.extend(submenus or [])
+        for menu in menus:
+            try:
+                menu.configure(
+                    background=bg,
+                    foreground=fg,
+                    activebackground=active_bg,
+                    activeforeground=active_fg,
+                    bd=0,
+                    relief="flat",
+                )
+            except Exception:
+                pass
 
     def create_menu_bar(self):
         """创建菜单栏"""
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
+        try:
+            self.root.config(menu="")
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "menu_frame") and self.menu_frame and self.menu_frame.winfo_exists():
+                self.menu_frame.destroy()
+        except Exception:
+            pass
+
+        self.menu_frame = ttk.Frame(self.root)
+        self.menu_frame.pack(side=TOP, fill=X)
+
+        self.menubar = None
+        self._submenu_list = []
+        self.menu_buttons = []
         
         # 文件菜单
-        file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="文件", menu=file_menu)
+        file_btn = ttk.Menubutton(self.menu_frame, text="文件")
+        file_btn.pack(side=LEFT, padx=(6, 0), pady=2)
+        self.menu_buttons.append(file_btn)
+        file_menu = tk.Menu(file_btn, tearoff=0)
+        file_btn["menu"] = file_menu
+        self._submenu_list.append(file_menu)
         file_menu.add_command(label="打开壁纸文件夹", command=self.open_wallpaper_folder)
         file_menu.add_command(label="更改壁纸文件夹", command=self.change_wallpaper_folder)
         file_menu.add_separator()
@@ -1080,17 +2257,42 @@ class WallpaperApp:
         file_menu.add_command(label="退出", command=self.quit_app)
         
         # 工具菜单
-        tools_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="运行", menu=tools_menu)
+        tools_btn = ttk.Menubutton(self.menu_frame, text="运行")
+        tools_btn.pack(side=LEFT, padx=(6, 0), pady=2)
+        self.menu_buttons.append(tools_btn)
+        tools_menu = tk.Menu(tools_btn, tearoff=0)
+        tools_btn["menu"] = tools_menu
+        self._submenu_list.append(tools_menu)
         tools_menu.add_command(label="查看信息推送内容", command=self.show_info_push)
         tools_menu.add_command(label="刷新信息推送数据", command=self.refresh_info_push)
         tools_menu.add_separator()
         tools_menu.add_command(label="启动屏保", command=self.start_screensaver)
         
+        # 外观菜单
+        appearance_btn = ttk.Menubutton(self.menu_frame, text="外观")
+        appearance_btn.pack(side=LEFT, padx=(6, 0), pady=2)
+        self.menu_buttons.append(appearance_btn)
+        appearance_menu = tk.Menu(appearance_btn, tearoff=0)
+        appearance_btn["menu"] = appearance_menu
+        self._submenu_list.append(appearance_menu)
+        
+        # 主题子菜单
+        theme_menu = tk.Menu(appearance_menu, tearoff=0)
+        appearance_menu.add_cascade(label="切换主题", menu=theme_menu)
+        self._submenu_list.append(theme_menu)
+
+        theme_menu.add_command(label="亮色", command=lambda: self.change_theme("litera"))
+        theme_menu.add_command(label="暗色", command=lambda: self.change_theme("darkly"))
+            
         # 设置菜单
-        settings_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="设置", menu=settings_menu)
+        settings_btn = ttk.Menubutton(self.menu_frame, text="设置")
+        settings_btn.pack(side=LEFT, padx=(6, 0), pady=2)
+        self.menu_buttons.append(settings_btn)
+        settings_menu = tk.Menu(settings_btn, tearoff=0)
+        settings_btn["menu"] = settings_menu
+        self._submenu_list.append(settings_menu)
         settings_menu.add_command(label="API Token设置", command=self.show_token_settings)
+        settings_menu.add_command(label="AI 对话设置", command=self.show_ai_settings)
         settings_menu.add_separator()
         settings_menu.add_command(label="导出配置", command=self.export_config)
         settings_menu.add_command(label="导入配置", command=self.import_config)
@@ -1105,19 +2307,24 @@ class WallpaperApp:
                                     command=self.toggle_startup_from_menu)
         
         # 帮助菜单
-        help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="帮助", menu=help_menu)
+        help_btn = ttk.Menubutton(self.menu_frame, text="帮助")
+        help_btn.pack(side=LEFT, padx=(6, 0), pady=2)
+        self.menu_buttons.append(help_btn)
+        help_menu = tk.Menu(help_btn, tearoff=0)
+        help_btn["menu"] = help_menu
+        self._submenu_list.append(help_menu)
         help_menu.add_command(label="关于", command=self.show_about)
+        self._apply_menu_theme()
         
     def show_token_settings(self):
         """显示API Token设置窗口"""
-        token_window = tk.Toplevel(self.root)
+        token_window = ttk.Toplevel(self.root)
         token_window.title("API Token设置")
-        token_window.geometry("500x250")  # 增加高度从200到250
+        token_window.geometry("550x360")
         token_window.resizable(False, False)
         
         # 窗口居中
-        self.center_window(token_window, 500, 250)  # 更新居中参数
+        self.center_window(token_window, 550, 360)
         
         # 设置窗口图标
         try:
@@ -1125,44 +2332,174 @@ class WallpaperApp:
         except:
             pass
             
-        main_frame = ttk.Frame(token_window, padding=20)
+        main_frame = ttk.Frame(token_window, padding=25)
         main_frame.pack(fill=BOTH, expand=YES)
         
         # 标题
-        ttk.Label(main_frame, text="API Token设置", font=("Helvetica", 12, "bold")).pack(pady=(0, 15))
+        title_frame = ttk.Frame(main_frame)
+        title_frame.pack(fill=X, pady=(0, 20))
+        ttk.Label(title_frame, text="API Token配置", font=("Microsoft YaHei", 14, "bold"), bootstyle=PRIMARY).pack(side=LEFT)
         
         # Token输入
-        token_frame = ttk.Frame(main_frame)
+        token_frame = ttk.Labelframe(main_frame, text="ALAPI Token", padding=15)
         token_frame.pack(fill=X, pady=10)
-        ttk.Label(token_frame, text="API Token:", font=("Helvetica", 10)).pack(anchor=W)
+        
         token_entry = ttk.Entry(token_frame, width=50, show="*")
-        token_entry.pack(fill=X, pady=(5, 0))
+        token_entry.pack(side=LEFT, fill=X, expand=YES)
         token_entry.insert(0, self.api_token)
         
+        # 显示/隐藏按钮
+        def toggle_show():
+            if token_entry.cget('show') == '*':
+                token_entry.config(show='')
+                show_btn.config(text="隐藏")
+            else:
+                token_entry.config(show='*')
+                show_btn.config(text="显示")
+                
+        show_btn = ttk.Button(token_frame, text="显示", command=toggle_show, bootstyle="link-secondary")
+        show_btn.pack(side=RIGHT, padx=(5, 0))
+        
         # 说明文字
-        ttk.Label(main_frame, text="注意：信息推送功能需要有效的API Token", 
-                 font=("Helvetica", 9), bootstyle=SECONDARY).pack(pady=(5, 5))
-        ttk.Label(main_frame, text="API网址：https://www.alapi.cn/", 
-                 font=("Helvetica", 9), bootstyle=INFO).pack(pady=(0, 15))
+        info_frame = ttk.Frame(main_frame)
+        info_frame.pack(fill=X, pady=10)
+        ttk.Label(info_frame, text="说明：本软件使用ALAPI提供的服务，需要配置Token才能使用。\n获取地址：https://www.alapi.cn/", 
+                 font=("Microsoft YaHei", 9), bootstyle=SECONDARY, justify=LEFT).pack(anchor=W)
         
         # 按钮
         button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=X)
+        button_frame.pack(fill=X, pady=(20, 0))
         
         def save_and_close():
-            self.api_token = token_entry.get().strip()
+            token = token_entry.get().strip()
+            self.api_token = token
+            
+            # 更新所有管理器的Token
+            if hasattr(self, 'alapi_manager'):
+                self.alapi_manager.set_token(token)
+            if hasattr(self, 'daily_news_manager'):
+                self.daily_news_manager.set_token(token)
+            if hasattr(self, 'integrated_features_manager'):
+                self.integrated_features_manager.set_token(token)
+            
             # 更新主界面中的token_entry（如果存在）
             if hasattr(self, 'token_entry'):
                 self.token_entry.delete(0, tk.END)
                 self.token_entry.insert(0, self.api_token)
+                
             self.save_token()
             token_window.destroy()
+            
+            # 刷新可能已经打开的窗口
+            if self.daily_news_window and hasattr(self.daily_news_window, 'window') and self.daily_news_window.window.winfo_exists():
+                 self.daily_news_window.refresh_news()
+            
+            self.show_center_messagebox_dialog("成功", "API Token已更新并生效", "success", parent=self.root)
             
         def cancel():
             token_window.destroy()
             
-        ttk.Button(button_frame, text="保存", command=save_and_close, bootstyle=SUCCESS).pack(side=RIGHT, padx=(5, 0))
+        ttk.Button(button_frame, text="保存设置", command=save_and_close, bootstyle=SUCCESS).pack(side=RIGHT, padx=(10, 0))
         ttk.Button(button_frame, text="取消", command=cancel, bootstyle=SECONDARY).pack(side=RIGHT)
+        
+        # 链接点击事件
+        def open_url(event):
+            import webbrowser
+            webbrowser.open("https://www.alapi.cn/")
+            
+        link_label = ttk.Label(info_frame, text="点击注册/获取Token", font=("Microsoft YaHei", 9, "underline"), 
+                              bootstyle="link", cursor="hand2")
+        link_label.pack(anchor=W, pady=(5, 0))
+        link_label.bind("<Button-1>", open_url)
+
+    def show_ai_settings(self):
+        ai_window = ttk.Toplevel(self.root)
+        ai_window.title("AI 对话设置")
+        ai_window.transient(self.root)
+        ai_window.grab_set()
+
+        screen_w = ai_window.winfo_screenwidth()
+        screen_h = ai_window.winfo_screenheight()
+        width = min(920, max(650, int(screen_w * 0.75)))
+        height = min(760, max(520, int(screen_h * 0.75)))
+
+        ai_window.geometry(f"{width}x{height}")
+        ai_window.minsize(650, 520)
+        ai_window.resizable(True, True)
+        self.center_window(ai_window, width, height)
+
+        try:
+            ai_window.iconbitmap(self.icon_path)
+        except Exception:
+            pass
+
+        outer = ttk.Frame(ai_window, padding=18)
+        outer.pack(fill=BOTH, expand=YES)
+
+        title_frame = ttk.Frame(outer)
+        title_frame.pack(fill=X, pady=(0, 20))
+        ttk.Label(title_frame, text="AI 对话配置", font=("Microsoft YaHei", 14, "bold"), bootstyle=PRIMARY).pack(side=LEFT)
+
+        content_scrolled = ScrolledFrame(outer, autohide=True)
+        content_scrolled.pack(fill=BOTH, expand=True)
+        content = content_scrolled.container
+
+        base_url_frame = ttk.Labelframe(content, text="接口地址", padding=15)
+        base_url_frame.pack(fill=X, pady=10)
+        ttk.Label(base_url_frame, text="Base URL（如 https://api.openai.com/v1 ）:").pack(anchor=W)
+        base_url_var = tk.StringVar(value=getattr(self, "ai_base_url", "") or "")
+        ttk.Entry(base_url_frame, textvariable=base_url_var, width=80).pack(fill=X, pady=(5, 0))
+
+        key_frame = ttk.Labelframe(content, text="Token / API Key", padding=15)
+        key_frame.pack(fill=X, pady=10)
+        ttk.Label(key_frame, text="API Key:").pack(anchor=W)
+        key_var = tk.StringVar(value=getattr(self, "ai_api_key", "") or "")
+        key_entry = ttk.Entry(key_frame, textvariable=key_var, width=80, show="*")
+        key_entry.pack(fill=X, pady=(5, 0))
+
+        def toggle_show():
+            if key_entry.cget("show") == "*":
+                key_entry.config(show="")
+                show_btn.config(text="隐藏")
+            else:
+                key_entry.config(show="*")
+                show_btn.config(text="显示")
+
+        show_btn = ttk.Button(key_frame, text="显示", command=toggle_show, bootstyle="link-secondary")
+        show_btn.pack(anchor=E, pady=(8, 0))
+
+        model_frame = ttk.Labelframe(content, text="模型", padding=15)
+        model_frame.pack(fill=X, pady=10)
+        ttk.Label(model_frame, text="Model:").pack(anchor=W)
+        model_var = tk.StringVar(value=getattr(self, "ai_model", "") or "")
+        ttk.Entry(model_frame, textvariable=model_var, width=80).pack(fill=X, pady=(5, 0))
+
+        prompt_frame = ttk.Labelframe(content, text="系统提示词（可选）", padding=15)
+        prompt_frame.pack(fill=BOTH, expand=True, pady=10)
+        prompt_text = tk.Text(prompt_frame, height=5, wrap="word", font=("Microsoft YaHei", 10))
+        prompt_text.pack(fill=BOTH, expand=True)
+        prompt_text.insert("1.0", getattr(self, "ai_system_prompt", "") or "")
+
+        button_frame = ttk.Frame(outer)
+        button_frame.pack(fill=X, pady=(15, 0))
+
+        def save_and_close():
+            self.ai_base_url = base_url_var.get().strip()
+            self.ai_api_key = key_var.get().strip()
+            self.ai_model = model_var.get().strip() or "gpt-4o-mini"
+            self.ai_system_prompt = (prompt_text.get("1.0", "end") or "").strip()
+            self.save_config()
+
+            if hasattr(self, "ai_chat_status_label"):
+                try:
+                    self._ai_refresh_status()
+                except Exception:
+                    pass
+
+            ai_window.destroy()
+
+        ttk.Button(button_frame, text="保存设置", command=save_and_close, bootstyle=SUCCESS).pack(side=RIGHT, padx=(10, 0))
+        ttk.Button(button_frame, text="取消", command=ai_window.destroy, bootstyle=SECONDARY).pack(side=RIGHT)
         
     def toggle_startup_from_menu(self):
         """从菜单切换开机启动状态"""
@@ -1269,8 +2606,8 @@ class WallpaperApp:
         main_frame.pack(fill=BOTH, expand=YES)
         
         # 软件名称和版本
-        ttk.Label(main_frame, text="魔力桌面助手", font=("Helvetica", 16, "bold"), bootstyle=PRIMARY).pack(pady=(10, 5))
-        ttk.Label(main_frame, text="v3.0.0", font=("Helvetica", 12), bootstyle=INFO).pack(pady=(0, 20))
+        ttk.Label(main_frame, text="魔力桌面助手", font=("Microsoft YaHei", 16, "bold"), bootstyle=PRIMARY).pack(pady=(10, 5))
+        ttk.Label(main_frame, text="v3.0.0", font=("Microsoft YaHei", 12), bootstyle=INFO).pack(pady=(0, 20))
         
         # 免责声明
         disclaimer_text = """免责声明：
@@ -1278,7 +2615,7 @@ class WallpaperApp:
 本软件仅供个人学习和交流使用，
 使用本软件产生的任何问题，
 开发者不承担任何责任。"""
-        ttk.Label(main_frame, text=disclaimer_text, font=("Helvetica", 10), 
+        ttk.Label(main_frame, text=disclaimer_text, font=("Microsoft YaHei", 10), 
                  bootstyle=WARNING, justify=CENTER).pack(pady=(0, 20))
         
         # 关闭按钮
@@ -1288,181 +2625,1034 @@ class WallpaperApp:
     def quit_app(self):
         """退出应用程序"""
         if self.show_center_messagebox_dialog("确认退出", "确定要退出程序吗？", "yesno"):
+            if self.tray_icon:
+                self.tray_icon.stop()
             self.root.quit()
             self.root.destroy()
 
     def setup_ui(self):
         """设置用户界面"""
-        # --- 创建菜单栏 ---
         self.create_menu_bar()
         
-        # --- UI Setup ---
-        main_frame = ttk.Frame(self.root, padding=15)
-        main_frame.pack(fill=BOTH, expand=YES)
+        # Main Container
+        self.main_container = ttk.Frame(self.root)
+        self.main_container.pack(fill=BOTH, expand=YES)
+        
+        # Body Frame (Sidebar + Content)
+        body_frame = ttk.Frame(self.main_container)
+        body_frame.pack(side=TOP, fill=BOTH, expand=YES)
+        
+        # Status Bar
+        self.status_bar = ttk.Frame(self.main_container)
+        self.status_bar.pack(side=BOTTOM, fill=X)
+        self.label = ttk.Label(self.status_bar, text="准备就绪", font=("Microsoft YaHei", 9), padding=5, bootstyle="secondary")
+        self.label.pack(side=LEFT)
+        
+        # Sidebar
+        self.create_sidebar(body_frame)
+        
+        # Content Area
+        self.content_area = ttk.Frame(body_frame, padding=20)
+        self.content_area.pack(side=LEFT, fill=BOTH, expand=YES)
+        
+        # Initialize Pages Container
+        self.pages = {}
+        
+        # Create pages
+        self.create_news_page()
+        self.create_info_push_page()
+        self.create_wallpaper_screensaver_page()
+        self.create_calendar_page()
+        self.create_settings_page()
+        self.create_ai_chat_page()
+        
+        # System Tray & State
+        self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        self.init_tray_icon()
+        self.root.after(0, lambda: self.set_window_icon(self.root))
+        self.wallpaper_timer = None
+        self.screensaver_timer = None
+        
+        # Init status display
+        if self.auto_screensaver_enabled:
+            self.update_label(f"自动屏保已启用，{self.idle_time_minutes}分钟无操作后启动")
+        else:
+            self.update_label("请设置并启动功能")
+            
+        self.screensaver_window = None
+        self.screensaver_images = []
+        self.is_fetching = False
+        
+        # 默认开启：自动更换壁纸与信息自动推送
+        try:
+            if hasattr(self, 'wallpaper_widget') and self.wallpaper_widget.auto_change_var.get():
+                self.wallpaper_widget.toggle_auto_change()
+            if hasattr(self, 'auto_info_push_var') and self.auto_info_push_var.get():
+                self.toggle_auto_info_push()
+        except Exception as _e:
+            print(f"初始化默认开关失败: {_e}")
 
-        self.label = ttk.Label(main_frame, text="请设置并启动功能", bootstyle=INFO)
-        self.label.pack(pady=(0, 10))
+        self._apply_canvas_theme()
+        
+        # Show default page
+        self.show_page('news')
+        
+        # Apply titlebar theme initially
+        self.root.after(100, lambda: apply_theme_to_titlebar(self.root))
+        self.root.after(300, lambda: apply_theme_to_titlebar(self.root))
+        self.root.after(900, lambda: apply_theme_to_titlebar(self.root))
 
-        # --- Wallpaper Section ---
-        wp_frame = ttk.Labelframe(main_frame, text="壁纸设置", padding=10)
-        wp_frame.pack(fill=X, pady=5)
+    def create_sidebar(self, parent):
+        """创建侧边栏导航"""
+        # 移除 bootstyle="light" 以跟随主题
+        sidebar = ttk.Frame(parent, width=200)
+        sidebar.pack(side=LEFT, fill=Y)
+        
+        # 标题区域
+        title_frame = ttk.Frame(sidebar, padding=20)
+        title_frame.pack(fill=X)
+        ttk.Label(title_frame, text="魔力桌面", font=("Microsoft YaHei", 18, "bold"), bootstyle="primary").pack()
+        
+        # 导航按钮区域
+        nav_frame = ttk.Frame(sidebar, padding=10)
+        nav_frame.pack(fill=X, expand=False, anchor=N)
+        
+        buttons = [
+            ("每日早报", "news"),
+            ("信息推送", "info_push"),
+            ("AI对话", "ai_chat"),
+            ("壁纸/屏保", "wallpaper_screensaver"),
+            ("日历提醒", "calendar"),
+            ("系统设置", "settings")
+        ]
+        
+        self.nav_btns = {}
+        
+        for text, page_id in buttons:
+            btn = ttk.Button(
+                nav_frame, 
+                text=f" {text}", 
+                command=lambda p=page_id: self.show_page(p),
+                bootstyle="link", 
+                width=20,
+                cursor="hand2"
+            )
+            btn.pack(fill=X, pady=5, anchor=W)
+            self.nav_btns[page_id] = btn
 
-        wp_button_frame = ttk.Frame(wp_frame)
-        wp_button_frame.pack(pady=5, fill=X)
-        self.change_button = ttk.Button(wp_button_frame, text="更换壁纸", command=self.start_change_wallpaper_thread, bootstyle=SUCCESS)
-        self.change_button.pack(side=LEFT, padx=(0, 5), expand=YES, fill=X)
+        # --- 侧边栏天气 (新位置) ---
+        weather_frame = ttk.Frame(sidebar, padding=10)
+        weather_frame.pack(side=BOTTOM, fill=X, pady=(0, 5))
+        
+        self.sidebar_weather_icon = ttk.Label(weather_frame, text="🌤️", font=("Segoe UI Emoji", 20))
 
-        wp_auto_frame = ttk.Frame(wp_frame)
-        wp_auto_frame.pack(pady=5, fill=X)
-        self.auto_change_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(wp_auto_frame, text="自动更换", variable=self.auto_change_var, command=self.toggle_auto_change, bootstyle="round-toggle").pack(side=LEFT)
-        ttk.Label(wp_auto_frame, text="间隔(分钟):").pack(side=LEFT, padx=(15, 5))
-        self.wallpaper_interval_entry = ttk.Entry(wp_auto_frame, width=8)
-        self.wallpaper_interval_entry.insert(0, "30")
-        self.wallpaper_interval_entry.pack(side=LEFT, fill=X, expand=YES)
+        self.sidebar_weather_icon.pack(side=LEFT, padx=(0, 10))
+        
+        info_frame = ttk.Frame(weather_frame)
+        info_frame.pack(side=LEFT, fill=X)
+        
+        self.sidebar_weather_temp = ttk.Label(info_frame, text="--°C", font=("Microsoft YaHei", 10, "bold"))
+        self.sidebar_weather_temp.pack(anchor=W)
+        
+        self.sidebar_weather_city = ttk.Label(info_frame, text="正在获取...", font=("Microsoft YaHei", 9))
+        self.sidebar_weather_city.pack(anchor=W)
+        self.root.after(0, self._apply_sidebar_weather_style)
 
-        # --- Screensaver Section ---
-        ss_frame = ttk.Labelframe(main_frame, text="屏保设置", padding=10)
-        ss_frame.pack(fill=X, pady=5)
+        def on_weather_click(event):
+            self.refresh_sidebar_weather(force_locate=True)
+            
+        weather_frame.bind("<Button-1>", on_weather_click)
+        self.sidebar_weather_icon.bind("<Button-1>", on_weather_click)
+        self.sidebar_weather_temp.bind("<Button-1>", on_weather_click)
+        self.sidebar_weather_city.bind("<Button-1>", on_weather_click)
+        
+        # 初始加载天气
+        self.root.after(1000, self.refresh_sidebar_weather)
 
-        ss_interval_frame = ttk.Frame(ss_frame)
-        ss_interval_frame.pack(pady=5, fill=X)
-        ttk.Label(ss_interval_frame, text="切换间隔(分钟):").pack(side=LEFT)
-        self.screensaver_interval_entry = ttk.Entry(ss_interval_frame, width=8)
-        self.screensaver_interval_entry.insert(0, "1")
-        self.screensaver_interval_entry.pack(side=LEFT, padx=5, fill=X, expand=YES)
+    def refresh_sidebar_weather(self, force_locate=False):
+        """刷新侧边栏天气"""
+        def _load():
+            try:
+                service = WeatherService()
+                city = getattr(self, "weather_city", "北京")
+                is_auto = (not city) or (city == "自动")
+                
+                # 如果是"自动"或者强制定位，则获取IP位置
+                if is_auto or force_locate:
+                    self.safe_after(0, lambda: self.sidebar_weather_city.config(text="定位中..."))
+                    loc_city = service.get_location_by_ip()
+                    if loc_city:
+                        city = loc_city
+                        if is_auto:
+                            setattr(self, "_last_auto_city", city)
+                        else:
+                            self.weather_city = city
+                            self.save_config()
+                            if hasattr(self, 'city_entry'):
+                                self.safe_after(0, lambda: self.city_entry.delete(0, END) or self.city_entry.insert(0, city))
+                        if hasattr(self, 'alapi_manager'):
+                            self.alapi_manager.set_city(city)
+                        if hasattr(self, 'integrated_features_manager'):
+                            self.integrated_features_manager.city = city
+                    else:
+                        if is_auto:
+                            setattr(self, "_last_auto_city", None)
+                        city = "北京"
+                
+                result = service.get_weather(city)
 
-        # 自动屏保设置
-        ss_auto_frame = ttk.Frame(ss_frame)
-        ss_auto_frame.pack(pady=5, fill=X)
-        self.auto_screensaver_var = tk.BooleanVar(value=self.auto_screensaver_enabled)
-        ttk.Checkbutton(ss_auto_frame, text="自动屏保", variable=self.auto_screensaver_var, command=self.toggle_auto_screensaver, bootstyle="round-toggle").pack(side=LEFT)
-        ttk.Label(ss_auto_frame, text="空闲时间(分钟):").pack(side=LEFT, padx=(15, 5))
-        self.idle_time_var = tk.StringVar(value=str(self.idle_time_minutes))
-        self.idle_time_entry = ttk.Entry(ss_auto_frame, textvariable=self.idle_time_var, width=8)
-        self.idle_time_entry.pack(side=LEFT, padx=5)
-        ttk.Button(ss_auto_frame, text="应用", command=self.update_idle_time, bootstyle=INFO).pack(side=LEFT, padx=5)
+                def _update():
+                    if "error" in result:
+                        self.sidebar_weather_icon.config(text="⚠️")
+                        self.sidebar_weather_temp.config(text="--")
+                        self.sidebar_weather_city.config(text="获取失败")
+                        self._apply_sidebar_weather_style()
+                        return
 
-        # --- Information Push Section ---
-        info_frame = ttk.Labelframe(main_frame, text="信息推送", padding=10)
+                    status = result.get("status", "未知")
+                    city_name = result.get("city", city)
+                    temp = result.get("temperature", "")
+                    
+                    # Get icon
+                    code = result.get("code", 0)
+                    icon = service.get_weather_icon_name(code)
+
+                    self.sidebar_weather_icon.config(text=icon)
+                    self.sidebar_weather_temp.config(text=f"{temp}°C")
+                    if is_auto and city == "北京":
+                        self.sidebar_weather_city.config(text=f"{city_name} | 定位失败")
+                    else:
+                        self.sidebar_weather_city.config(text=f"{city_name} | {status}")
+                    self._apply_sidebar_weather_style()
+
+                self.safe_after(0, _update)
+            except Exception as e:
+                print(f"Weather refresh failed: {e}")
+
+        threading.Thread(target=_load, daemon=True).start()
+
+    def _apply_sidebar_weather_style(self):
+        try:
+            style = ttk.Style()
+            fg = getattr(style.colors, "fg", None) or style.lookup("TLabel", "foreground") or "#000000"
+            if self._is_dark_theme():
+                self.sidebar_weather_city.configure(foreground=fg)
+                self.sidebar_weather_temp.configure(foreground=fg)
+            else:
+                self.sidebar_weather_city.configure(foreground=fg)
+                self.sidebar_weather_temp.configure(foreground=fg)
+        except Exception:
+            pass
+
+    def create_wallpaper_page(self):
+        """创建壁纸管理页面"""
+        page = ttk.Frame(self.content_area)
+        
+        def save_wallpaper_settings():
+            self.auto_wallpaper_change = self.wallpaper_widget.auto_change_var.get()
+            try:
+                self.wallpaper_interval_minutes = float(self.wallpaper_widget.interval_var.get())
+            except ValueError:
+                pass
+            self.save_config()
+
+        # 使用 WallpaperWidget
+        self.wallpaper_widget = WallpaperWidget(
+            page, 
+            self.wallpaper_dir, 
+            initial_interval=getattr(self, "wallpaper_interval_minutes", 30),
+            auto_enabled=getattr(self, "auto_wallpaper_change", False),
+            on_config_change=save_wallpaper_settings,
+            ui_after=self.safe_after,
+        )
+        self.wallpaper_widget.pack(fill=BOTH, expand=YES)
+        
+        self.pages['wallpaper'] = page
+
+    def create_screensaver_page(self):
+        """创建屏保设置页面"""
+        page = ttk.Frame(self.content_area)
+        
+        # 初始化管理器
+        if not hasattr(self, 'screensaver_manager'):
+             self.screensaver_manager = ScreensaverManager(self.root, self.screensaver_dir, self.update_label)
+             # Sync settings
+             self.screensaver_manager.auto_screensaver_enabled = self.auto_screensaver_enabled
+             self.screensaver_manager.idle_time_minutes = self.idle_time_minutes
+             self.screensaver_manager.start_idle_check()
+
+        def save_screensaver_settings():
+            self.auto_screensaver_enabled = self.screensaver_manager.auto_screensaver_enabled
+            self.idle_time_minutes = self.screensaver_manager.idle_time_minutes
+            self.save_config()
+
+        self.screensaver_widget = ScreensaverWidget(page, self.screensaver_manager, on_config_change=save_screensaver_settings)
+        self.screensaver_widget.pack(fill=BOTH, expand=YES)
+        
+        self.pages['screensaver'] = page
+
+    def create_wallpaper_screensaver_page(self):
+        """创建壁纸与屏保页面"""
+        page = ttk.Frame(self.content_area)
+
+        # 使用 ScrolledFrame 作为容器，防止内容过长
+        scrolled_container = ScrolledFrame(page, autohide=False)
+        scrolled_container.pack(fill=BOTH, expand=YES)
+        
+        # 获取内部容器
+        content = scrolled_container.container
+
+        # 1. 壁纸管理模块
+        def save_wallpaper_settings():
+            self.auto_wallpaper_change = self.wallpaper_widget.auto_change_var.get()
+            try:
+                self.wallpaper_interval_minutes = float(self.wallpaper_widget.interval_var.get())
+            except ValueError:
+                pass
+            self.save_config()
+
+        self.wallpaper_widget = WallpaperWidget(
+            content,
+            self.wallpaper_dir,
+            initial_interval=getattr(self, "wallpaper_interval_minutes", 30),
+            auto_enabled=getattr(self, "auto_wallpaper_change", False),
+            on_config_change=save_wallpaper_settings,
+            ui_after=self.safe_after,
+        )
+        self.wallpaper_widget.pack(fill=X, expand=YES, padx=10, pady=(0, 20))
+
+        # 分隔线
+        ttk.Separator(content, orient=HORIZONTAL).pack(fill=X, padx=10, pady=10)
+
+        # 2. 屏保设置模块
+        if not hasattr(self, 'screensaver_manager'):
+            self.screensaver_manager = ScreensaverManager(self.root, self.screensaver_dir, self.update_label)
+            self.screensaver_manager.auto_screensaver_enabled = self.auto_screensaver_enabled
+            self.screensaver_manager.idle_time_minutes = self.idle_time_minutes
+            self.screensaver_manager.start_idle_check()
+
+        def save_screensaver_settings():
+            self.auto_screensaver_enabled = self.screensaver_manager.auto_screensaver_enabled
+            self.idle_time_minutes = self.screensaver_manager.idle_time_minutes
+            self.save_config()
+
+        self.screensaver_widget = ScreensaverWidget(
+            content,
+            self.screensaver_manager,
+            on_config_change=save_screensaver_settings,
+            use_scroll=False  # 禁用内部滚动，使用外部 ScrolledFrame
+        )
+        self.screensaver_widget.pack(fill=X, expand=YES, padx=10, pady=(0, 20))
+
+        self.pages['wallpaper_screensaver'] = page
+
+    def create_news_page(self):
+        """创建新闻页面"""
+        page = ttk.Frame(self.content_area)
+        # 初始化管理器
+        if not hasattr(self, 'daily_news_manager'):
+             self.daily_news_manager = DailyNewsManager()
+             self.daily_news_manager.set_token(self.api_token)
+        
+        # 使用 NewsWidget
+        self.news_widget = NewsWidget(page, self.daily_news_manager, ui_after=self.safe_after)
+        self.news_widget.pack(fill=BOTH, expand=YES)
+        
+        self.pages['news'] = page
+
+    def create_info_push_page(self):
+        """创建信息推送页面"""
+        page = ttk.Frame(self.content_area)
+        
+        # 初始化管理器
+        if not hasattr(self, 'alapi_manager'):
+             self.alapi_manager = ALAPIManager()
+             self.alapi_manager.set_token(self.api_token)
+             
+        # 使用 InfoPushWidget
+        self.info_push_widget = InfoPushWidget(page, self.alapi_manager, on_settings_click=None, ui_after=self.safe_after)
+        self.info_push_widget.pack(fill=BOTH, expand=YES)
+        
+        # 预加载服务设置 (从settings page同步)
+        # 这里需要注意，service_vars是在create_settings_page初始化的，
+        # 如果settings page还没创建，可能需要先初始化变量。
+        # 更好的做法是把配置状态提升到App类中，或者单独的ConfigManager。
+        # 暂时我们先检查self.service_vars是否存在。
+        if not hasattr(self, 'service_vars'):
+            self.init_service_vars()
+            
+        selected_services = [k for k, v in self.service_vars.items() if v.get()]
+        self.info_push_widget.selected_services = selected_services
+
+        self.root.after(200, self.info_push_widget.refresh_content)
+        
+        self.pages['info_push'] = page
+
+    def create_calendar_page(self):
+        """创建日历页面"""
+        page = ttk.Frame(self.content_area)
+        # 初始化管理器
+        if not hasattr(self, 'calendar_reminder_manager'):
+            self.calendar_reminder_manager = CalendarReminderManager(self.app_data_dir, tk_root=self.root)
+            self.calendar_reminder_manager.set_notification_callback(show_reminder_notification)
+        self.calendar_manager = self.calendar_reminder_manager
+        
+        calendar_widget = CalendarWidget(page, self.calendar_reminder_manager)
+        calendar_widget.pack(fill=BOTH, expand=YES)
+        
+        self.pages['calendar'] = page
+
+    def init_service_vars(self):
+        """初始化服务变量"""
+        if not hasattr(self, 'service_vars'):
+            self.service_vars = {
+                'poetry': tk.BooleanVar(name='poetry', value=True),
+                'hitokoto': tk.BooleanVar(name='hitokoto', value=True),
+                'love_words': tk.BooleanVar(name='love_words', value=True),
+                'dog_diary': tk.BooleanVar(name='dog_diary', value=True),
+                'daily_article': tk.BooleanVar(name='daily_article', value=True)
+            }
+            
+            self.service_names = {
+                'poetry': '每日诗词',
+                'hitokoto': 'Hitokoto一言',
+                'love_words': '土味情话',
+                'dog_diary': '舔狗日记',
+                'daily_article': '每日一文'
+            }
+
+    def on_service_toggle(self, service_name):
+        """服务开关回调"""
+        try:
+            # 更新InfoPushWidget (如果存在)
+            if hasattr(self, 'info_push_widget'):
+                selected_services = [k for k, v in self.service_vars.items() if v.get()]
+                self.info_push_widget.selected_services = selected_services
+            
+            # 打印日志
+            status = "启用" if self.service_vars[service_name].get() else "禁用"
+            name = self.service_names.get(service_name, service_name)
+            print(f"服务 {name} 已{status}")
+            
+        except Exception as e:
+            print(f"服务切换失败: {e}")
+
+    def create_settings_page(self):
+        """创建设置页面"""
+        page = ttk.Frame(self.content_area)
+        
+        ttk.Label(page, text="系统设置", font=("Microsoft YaHei", 20, "bold")).pack(anchor=W, pady=(0, 20))
+        
+
+        
+        # --- End Weather ---
+
+        # 初始化变量
+        self.init_service_vars()
+        
+        # 信息推送设置 (Legacy support)
+        info_frame = ttk.Labelframe(page, text="信息推送内容配置", padding=10)
         info_frame.pack(fill=X, pady=5)
 
-        # 服务选择区域
         services_frame = ttk.Frame(info_frame)
         services_frame.pack(fill=X, pady=5)
         
-        # 创建多选框变量
-        self.service_vars = {
-            'daily_news': tk.BooleanVar(name='每日早报', value=True),
-            'hitokoto': tk.BooleanVar(name='Hitokoto一言', value=True),
-            'love_words': tk.BooleanVar(name='土味情话', value=True),
-            'dog_diary': tk.BooleanVar(name='舔狗日记', value=True),
-            'daily_article': tk.BooleanVar(name='每日一文', value=True)
-        }
-        
-        # 服务名称映射
-        self.service_names = {
-            'daily_news': '每日早报',
-            'hitokoto': 'Hitokoto一言',
-            'love_words': '土味情话',
-            'dog_diary': '舔狗日记',
-            'daily_article': '每日一文'
-        }
-        
-        # 创建两行多选框布局
         row1_frame = ttk.Frame(services_frame)
         row1_frame.pack(fill=X, pady=2)
         row2_frame = ttk.Frame(services_frame)
         row2_frame.pack(fill=X, pady=2)
         
-        # 第一行：每日早报、Hitokoto一言、土味情话
-        services_row1 = ['daily_news', 'hitokoto', 'love_words']
+        services_row1 = ['poetry']
         for service in services_row1:
             ttk.Checkbutton(row1_frame, text=self.service_names[service], 
                            variable=self.service_vars[service], 
                            command=lambda s=service: self.on_service_toggle(s),
                            bootstyle="round-toggle").pack(side=LEFT, padx=10)
-        
-        # 第二行：舔狗日记、每日一文
-        services_row2 = ['dog_diary', 'daily_article']
+                           
+        services_row2 = ['hitokoto', 'love_words', 'dog_diary', 'daily_article']
         for service in services_row2:
             ttk.Checkbutton(row2_frame, text=self.service_names[service], 
                            variable=self.service_vars[service], 
                            command=lambda s=service: self.on_service_toggle(s),
                            bootstyle="round-toggle").pack(side=LEFT, padx=10)
 
-        # 按钮区域
-        info_button_frame = ttk.Frame(info_frame)
-        info_button_frame.pack(pady=5, fill=X)
-
         # 自动推送设置
-        info_auto_frame = ttk.Frame(info_frame)
-        info_auto_frame.pack(pady=5, fill=X)
+        push_frame = ttk.Frame(info_frame)
+        push_frame.pack(fill=X, pady=5)
         
-        # 统一的信息自动推送
         self.auto_info_push_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(info_auto_frame, text="信息自动推送", variable=self.auto_info_push_var, command=self.toggle_auto_info_push, bootstyle="round-toggle").pack(side=LEFT)
+        ttk.Checkbutton(push_frame, text="信息自动推送", variable=self.auto_info_push_var, command=self.toggle_auto_info_push, bootstyle="round-toggle").pack(side=LEFT)
         
-        # 推送时间设置
-        ttk.Label(info_auto_frame, text="推送时间:").pack(side=LEFT, padx=(20, 5))
-        self.push_time_entry = ttk.Entry(info_auto_frame, width=8)
+        ttk.Label(push_frame, text="推送时间:").pack(side=LEFT, padx=(20, 5))
+        self.push_time_entry = ttk.Entry(push_frame, width=8)
         self.push_time_entry.insert(0, "09:10")
         self.push_time_entry.pack(side=LEFT, padx=5)
-        ttk.Label(info_auto_frame, text="(格式: HH:MM)", font=("Helvetica", 8), bootstyle=SECONDARY).pack(side=LEFT, padx=(5, 0))
         
-        # 为了兼容性，保留原有的变量和时间输入框引用
-        self.auto_news_var = self.auto_info_push_var  # 早报推送变量指向统一推送变量
+        # 城市设置
+        ttk.Label(push_frame, text="天气城市:").pack(side=LEFT, padx=(20, 5))
+        self.city_entry = ttk.Entry(push_frame, width=10)
+        self.city_entry.insert(0, getattr(self, 'weather_city', '自动'))
+        self.city_entry.pack(side=LEFT, padx=5)
+        
+        def save_city_setting(event=None):
+            new_city = self.city_entry.get().strip()
+            if new_city:
+                self.weather_city = new_city
+                self.save_config()
+                # 更新管理器
+                if hasattr(self, 'alapi_manager'):
+                    self.alapi_manager.set_city("北京" if new_city == "自动" else new_city)
+                if hasattr(self, 'integrated_features_manager'):
+                    self.integrated_features_manager.city = "北京" if new_city == "自动" else new_city
+                if new_city == "自动":
+                    self.refresh_sidebar_weather(force_locate=True)
+                print(f"城市已更新为: {new_city}")
+        
+        self.city_entry.bind("<FocusOut>", save_city_setting)
+        self.city_entry.bind("<Return>", save_city_setting)
+        
+        # Compatibility aliases
+        self.auto_news_var = self.auto_info_push_var
         self.news_time_entry = self.push_time_entry
-
-        # 默认开启：自动更换壁纸与信息自动推送
-        try:
-            if self.auto_change_var.get():
-                self.toggle_auto_change()
-            if self.auto_info_push_var.get():
-                self.toggle_auto_info_push()
-        except Exception as _e:
-            print(f"初始化默认开关失败: {_e}")
         self.info_time_entry = self.push_time_entry
 
-        # --- Calendar Reminder Section ---
-        calendar_frame = ttk.Labelframe(main_frame, text="日历提醒", padding=10)
-        calendar_frame.pack(fill=X, pady=5)
+        # 常规设置
+        general_frame = ttk.Labelframe(page, text="常规设置", padding=10)
+        general_frame.pack(fill=X, pady=10)
+        
+        # 开机启动
+        if not hasattr(self, 'startup_var'):
+            self.startup_var = tk.BooleanVar()
+            self.startup_var.set(self.is_startup_enabled())
+            
+        ttk.Checkbutton(general_frame, text="开机自启动", variable=self.startup_var, 
+                       command=self.toggle_startup_from_menu, bootstyle="round-toggle").pack(anchor=W)
+        
+        # Token 设置按钮
+        ttk.Button(general_frame, text="配置 API Token", command=self.show_token_settings, 
+                  bootstyle="info-outline").pack(anchor=W, pady=10)
 
-        calendar_button_frame = ttk.Frame(calendar_frame)
-        calendar_button_frame.pack(pady=5, fill=X)
-        
-        ttk.Button(calendar_button_frame, text="打开日历", command=self.open_calendar_reminder, 
-                  bootstyle=WARNING).pack(side=LEFT, padx=(0, 5), expand=YES, fill=X)
-        
-        # 日历说明
-        calendar_info_frame = ttk.Frame(calendar_frame)
-        calendar_info_frame.pack(fill=X, pady=2)
-        ttk.Label(calendar_info_frame, text="点击日历可设置提醒事项，支持多种颜色分类和重复提醒", 
-                 font=("Helvetica", 8), bootstyle=SECONDARY).pack(anchor=W)
+        ttk.Button(general_frame, text="配置 AI 对话", command=self.show_ai_settings,
+                  bootstyle="info-outline").pack(anchor=W)
+                  
+        self.pages['settings'] = page
 
-        ss_button_frame = ttk.Frame(ss_frame)
-        ss_button_frame.pack(pady=5, fill=X)
-        self.screensaver_button = ttk.Button(ss_button_frame, text="启动屏保", command=self.start_screensaver, bootstyle=PRIMARY)
-        self.screensaver_button.pack(side=LEFT, padx=(0, 5), expand=YES, fill=X)
-        
-        # --- System Tray & State ---
-        self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
-        self.tray_icon = None
-        self.wallpaper_timer = None
-        self.screensaver_timer = None
-        
-        # 初始化状态显示
-        if self.auto_screensaver_enabled:
-            self.update_label(f"自动屏保已启用，{self.idle_time_minutes}分钟无操作后启动")
+    def create_ai_chat_page(self):
+        page = ttk.Frame(self.content_area)
+
+        header = ttk.Frame(page)
+        header.pack(fill=X, pady=(0, 10))
+
+        ttk.Label(header, text="AI 对话", font=("Microsoft YaHei", 20, "bold")).pack(side=LEFT)
+
+        ttk.Button(header, text="设置", command=self.show_ai_settings, bootstyle=SECONDARY).pack(side=RIGHT)
+        ttk.Button(header, text="历史", command=self.show_ai_history, bootstyle=SECONDARY).pack(side=RIGHT, padx=(0, 10))
+        ttk.Button(header, text="清空对话", command=self._ai_clear_chat, bootstyle="danger-outline").pack(side=RIGHT, padx=(0, 10))
+
+        status_frame = ttk.Frame(page)
+        status_frame.pack(fill=X, pady=(0, 10))
+        self.ai_chat_status_label = ttk.Label(status_frame, text="", font=("Microsoft YaHei", 9), bootstyle="secondary")
+        self.ai_chat_status_label.pack(side=LEFT)
+
+        paned = ttk.Panedwindow(page, orient=VERTICAL)
+        paned.pack(fill=BOTH, expand=True)
+
+        chat_container = ttk.Frame(paned)
+        input_frame = ttk.Frame(paned)
+        paned.add(chat_container, weight=4)
+        paned.add(input_frame, weight=1)
+
+        try:
+            style = ttk.Style()
+            bg = getattr(style.colors, "bg", None) or "#1E1E1E"
+            fg = getattr(style.colors, "fg", None) or "#FFFFFF"
+            selbg = getattr(style.colors, "selectbg", None) or "#3A7AFE"
+            selfg = getattr(style.colors, "selectfg", None) or "#FFFFFF"
+        except Exception:
+            bg, fg, selbg, selfg = "#1E1E1E", "#FFFFFF", "#3A7AFE", "#FFFFFF"
+
+        self.ai_chat_text = tk.Text(
+            chat_container,
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=0,
+            relief="flat",
+            undo=False,
+            autoseparators=False,
+            exportselection=False,
+            font=("Microsoft YaHei", 11),
+            background=bg,
+            foreground=fg,
+            selectbackground=selbg,
+            selectforeground=selfg,
+            state="disabled",
+        )
+        self.ai_chat_scrollbar = ttk.Scrollbar(chat_container, orient=VERTICAL, command=self.ai_chat_text.yview)
+        self.ai_chat_text.configure(yscrollcommand=self.ai_chat_scrollbar.set)
+        self.ai_chat_scrollbar.pack(side=RIGHT, fill=Y)
+        self.ai_chat_text.pack(side=LEFT, fill=BOTH, expand=True)
+
+        input_frame.configure(padding=(0, 10, 0, 0))
+
+        self.ai_input_text = tk.Text(
+            input_frame,
+            height=3,
+            wrap="word",
+            font=("Microsoft YaHei", 10),
+            background=bg,
+            foreground=fg,
+            insertbackground=fg,
+            selectbackground=selbg,
+            selectforeground=selfg,
+        )
+        self.ai_input_text.pack(side=LEFT, fill=X, expand=True)
+
+        btns = ttk.Frame(input_frame)
+        btns.pack(side=RIGHT, padx=(10, 0), fill=Y)
+
+        self.ai_send_btn = ttk.Button(btns, text="发送", command=self._ai_send, bootstyle=PRIMARY, width=10)
+        self.ai_send_btn.pack(side=TOP, pady=(0, 8))
+
+        def on_enter(event):
+            self._ai_send()
+            return "break"
+
+        def on_ctrl_enter(event):
+            try:
+                self.ai_input_text.insert("insert", "\n")
+            except Exception:
+                pass
+            return "break"
+
+        self.ai_input_text.bind("<Return>", on_enter)
+        self.ai_input_text.bind("<KP_Enter>", on_enter)
+        self.ai_input_text.bind("<Control-Return>", on_ctrl_enter)
+        self.ai_input_text.bind("<Control-KP_Enter>", on_ctrl_enter)
+
+        self._ai_history_ensure_current()
+        self._ai_render_messages_to_view(self.ai_messages)
+
+        self._ai_refresh_status()
+        self.pages["ai_chat"] = page
+
+    def _ai_refresh_status(self):
+        if not hasattr(self, "ai_chat_status_label"):
+            return
+        base_url = (getattr(self, "ai_base_url", "") or "").strip()
+        model = (getattr(self, "ai_model", "") or "").strip()
+        has_key = bool((getattr(self, "ai_api_key", "") or "").strip())
+        text = f"Base URL: {base_url or '未设置'}   Model: {model or '未设置'}   Key: {'已设置' if has_key else '未设置'}"
+        try:
+            self.ai_chat_status_label.config(text=text)
+        except Exception:
+            pass
+
+    def _ai_initial_messages(self):
+        system_prompt = (getattr(self, "ai_system_prompt", "") or "").strip()
+        if system_prompt:
+            return [{"role": "system", "content": system_prompt}]
+        return []
+
+    def _ai_history_ensure_current(self):
+        if not hasattr(self, "ai_chat_history") or self.ai_chat_history is None:
+            self.ai_chat_history = []
+        if not isinstance(self.ai_chat_history, list):
+            self.ai_chat_history = []
+        current_id = (getattr(self, "ai_current_session_id", "") or "").strip()
+        current = None
+        if current_id:
+            for s in self.ai_chat_history:
+                if isinstance(s, dict) and str(s.get("id") or "") == current_id:
+                    current = s
+                    break
+        if current is None:
+            current = self._ai_history_new_session(save=False)
+            self.ai_chat_history.insert(0, current)
+            self.ai_current_session_id = str(current.get("id") or "")
+        msgs = current.get("messages")
+        if isinstance(msgs, list) and msgs:
+            self.ai_messages = msgs
         else:
-            self.update_label("请设置并启动功能")
+            self.ai_messages = self._ai_initial_messages()
+            current["messages"] = self.ai_messages
+
+    def _ai_history_new_session(self, save=True):
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        session_id = f"{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        session = {
+            "id": session_id,
+            "title": f"新对话 {now}",
+            "created_at": now,
+            "updated_at": now,
+            "messages": self._ai_initial_messages(),
+        }
+        if save:
+            self.ai_chat_history.insert(0, session)
+            self.ai_current_session_id = session_id
+            self._ai_history_trim()
+            self.save_config()
+        return session
+
+    def _ai_history_trim(self):
+        if not isinstance(self.ai_chat_history, list):
+            self.ai_chat_history = []
+            return
+        max_sessions = 30
+        if len(self.ai_chat_history) > max_sessions:
+            self.ai_chat_history = self.ai_chat_history[:max_sessions]
+
+    def _ai_history_save_current(self):
+        self._ai_history_ensure_current()
+        current_id = (getattr(self, "ai_current_session_id", "") or "").strip()
+        if not current_id:
+            return
+        current = None
+        for s in self.ai_chat_history:
+            if isinstance(s, dict) and str(s.get("id") or "") == current_id:
+                current = s
+                break
+        if current is None:
+            return
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current["updated_at"] = now
+        msgs = self.ai_messages if isinstance(self.ai_messages, list) else []
+        max_messages = 200
+        if len(msgs) > max_messages:
+            if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system":
+                msgs = [msgs[0]] + msgs[-(max_messages - 1):]
+            else:
+                msgs = msgs[-max_messages:]
+        current["messages"] = msgs
+        title = str(current.get("title") or "").strip()
+        if not title or title.startswith("新对话"):
+            first_user = ""
+            for m in msgs:
+                if isinstance(m, dict) and m.get("role") == "user":
+                    first_user = str(m.get("content") or "").strip()
+                    if first_user:
+                        break
+            if first_user:
+                current["title"] = (first_user[:24] + "…") if len(first_user) > 24 else first_user
+        self._ai_history_trim()
+        self.save_config()
+
+    def _ai_render_messages_to_view(self, messages):
+        if not hasattr(self, "ai_chat_text"):
+            return
+        try:
+            self.ai_chat_text.configure(state="normal")
+            self.ai_chat_text.delete("1.0", "end")
+            self.ai_chat_text.configure(state="disabled")
+        except Exception:
+            pass
+        if not isinstance(messages, list):
+            return
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = (m.get("role") or "").strip()
+            content = m.get("content")
+            if content is None:
+                continue
+            text = str(content).strip()
+            if not text:
+                continue
+            if role == "user":
+                self._ai_append_to_view(f"你：{text}\n\n")
+            elif role == "assistant":
+                self._ai_append_to_view(f"AI：{text}\n\n")
+            elif role == "system":
+                self._ai_append_to_view(f"系统：{text}\n\n")
+            else:
+                self._ai_append_to_view(f"{role}：{text}\n\n")
+
+    def show_ai_history(self):
+        self._ai_history_ensure_current()
+        win = ttk.Toplevel(self.root)
+        win.title("AI 对话历史")
+        win.transient(self.root)
+        win.grab_set()
+        win.geometry("720x420")
+        win.minsize(520, 320)
+        try:
+            win.iconbitmap(self.icon_path)
+        except Exception:
+            pass
+
+        outer = ttk.Frame(win, padding=12)
+        outer.pack(fill=BOTH, expand=YES)
+
+        top = ttk.Frame(outer)
+        top.pack(fill=X, pady=(0, 10))
+        ttk.Label(top, text="历史会话", font=("Microsoft YaHei", 12, "bold")).pack(side=LEFT)
+
+        columns = ("title", "updated_at")
+        tree = ttk.Treeview(outer, columns=columns, show="headings", height=12)
+        tree.heading("title", text="标题")
+        tree.heading("updated_at", text="更新时间")
+        tree.column("title", width=480, anchor=W)
+        tree.column("updated_at", width=180, anchor=W)
+        tree.pack(fill=BOTH, expand=YES)
+
+        def _sorted_sessions():
+            items = []
+            for s in (self.ai_chat_history or []):
+                if isinstance(s, dict) and s.get("id"):
+                    items.append(s)
+            items.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
+            return items
+
+        sessions = _sorted_sessions()
+        for s in sessions:
+            sid = str(s.get("id"))
+            title = str(s.get("title") or sid)
+            updated = str(s.get("updated_at") or "")
+            tree.insert("", "end", iid=sid, values=(title, updated))
+
+        btns = ttk.Frame(outer)
+        btns.pack(fill=X, pady=(10, 0))
+
+        def _get_selected_id():
+            try:
+                sel = tree.selection()
+                if sel:
+                    return str(sel[0])
+            except Exception:
+                pass
+            return ""
+
+        def _load_selected(event=None):
+            sid = _get_selected_id()
+            if not sid:
+                return
+            target = None
+            for s in self.ai_chat_history:
+                if isinstance(s, dict) and str(s.get("id") or "") == sid:
+                    target = s
+                    break
+            if not target:
+                return
+            self.ai_current_session_id = sid
+            msgs = target.get("messages")
+            self.ai_messages = msgs if isinstance(msgs, list) else self._ai_initial_messages()
+            self._ai_render_messages_to_view(self.ai_messages)
+            self._ai_refresh_status()
+            win.destroy()
+
+        def _new_session():
+            self._ai_history_new_session(save=True)
+            self.ai_messages = self._ai_initial_messages()
+            self._ai_render_messages_to_view(self.ai_messages)
+            self._ai_refresh_status()
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        def _delete_selected():
+            sid = _get_selected_id()
+            if not sid:
+                return
+            if self.show_center_messagebox_dialog("确认删除", "确定要删除该历史会话吗？", "yesno", parent=win):
+                self.ai_chat_history = [s for s in (self.ai_chat_history or []) if not (isinstance(s, dict) and str(s.get("id") or "") == sid)]
+                if str(getattr(self, "ai_current_session_id", "") or "") == sid:
+                    self.ai_current_session_id = ""
+                    self._ai_history_ensure_current()
+                    self._ai_render_messages_to_view(self.ai_messages)
+                self.save_config()
+                try:
+                    tree.delete(sid)
+                except Exception:
+                    pass
+
+        ttk.Button(btns, text="加载", command=_load_selected, bootstyle=PRIMARY).pack(side=RIGHT, padx=(10, 0))
+        ttk.Button(btns, text="删除", command=_delete_selected, bootstyle="danger-outline").pack(side=RIGHT)
+        ttk.Button(btns, text="新建对话", command=_new_session, bootstyle="success-outline").pack(side=LEFT)
+        ttk.Button(btns, text="关闭", command=win.destroy, bootstyle=SECONDARY).pack(side=LEFT, padx=(10, 0))
+
+        tree.bind("<Double-1>", _load_selected)
+
+    def _ai_clear_chat(self):
+        self._ai_history_save_current()
+        self._ai_history_new_session(save=True)
+        self.ai_messages = self._ai_initial_messages()
+        self._ai_render_messages_to_view(self.ai_messages)
+
+    def _ai_append_to_view(self, text: str):
+        try:
+            self.ai_chat_text.configure(state="normal")
+            self.ai_chat_text.insert("end", text)
+            self.ai_chat_text.see("end")
+            self.ai_chat_text.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _ai_send(self):
+        if not hasattr(self, "ai_input_text"):
+            return
+
+        user_text = (self.ai_input_text.get("1.0", "end") or "").strip()
+        if not user_text:
+            return
+
+        base_url = (getattr(self, "ai_base_url", "") or "").strip()
+        api_key = (getattr(self, "ai_api_key", "") or "").strip()
+        model = (getattr(self, "ai_model", "") or "").strip()
+
+        if not base_url or not api_key or not model:
+            self.show_center_messagebox_dialog("提示", "请先在“AI 对话设置”中填写 Base URL、API Key、Model。", "warning", parent=self.root)
+            return
+
+        try:
+            self.ai_input_text.delete("1.0", "end")
+        except Exception:
+            pass
+
+        if not self.ai_messages:
+            self.ai_messages = self._ai_initial_messages()
+        self._ai_history_ensure_current()
+
+        self.ai_messages.append({"role": "user", "content": user_text})
+        self._ai_append_to_view(f"你：{user_text}\n\n")
+
+        try:
+            self.ai_send_btn.config(state="disabled")
+        except Exception:
+            pass
+
+        self._ai_refresh_status()
+        try:
+            self.ai_chat_status_label.config(text="正在请求…")
+        except Exception:
+            pass
+
+        def run():
+            try:
+                reply = self._ai_call_chat(self.ai_messages)
+                if not reply:
+                    raise RuntimeError("AI 返回内容为空")
+                self.ai_messages.append({"role": "assistant", "content": reply})
+                self.safe_after(0, lambda: self._ai_append_to_view(f"AI：{reply}\n\n"))
+                self.safe_after(0, self._ai_history_save_current)
+            except Exception as e:
+                err = str(e) if str(e) else "未知错误"
+                self.safe_after(0, lambda: self._ai_append_to_view(f"系统：请求失败：{err}\n\n"))
+            finally:
+                self.safe_after(0, lambda: self.ai_send_btn.config(state="normal") if hasattr(self, "ai_send_btn") else None)
+                self.safe_after(0, self._ai_refresh_status)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _ai_build_chat_completions_url(self, base_url: str) -> str:
+        base_url = (base_url or "").strip()
+        if not base_url:
+            return ""
+        if base_url.endswith("/v1/chat/completions"):
+            return base_url
+        if base_url.endswith("/v1"):
+            return base_url + "/chat/completions"
+        if base_url.endswith("/"):
+            return base_url + "v1/chat/completions"
+        return base_url + "/v1/chat/completions"
+
+    def _ai_call_chat(self, messages):
+        base_url = (getattr(self, "ai_base_url", "") or "").strip()
+        api_key = (getattr(self, "ai_api_key", "") or "").strip()
+        model = (getattr(self, "ai_model", "") or "").strip()
+        url = self._ai_build_chat_completions_url(base_url)
+        if not url:
+            raise RuntimeError("Base URL 无效")
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        except Exception as e:
+            raise RuntimeError(f"网络请求失败：{str(e)}")
+
+        if resp.status_code >= 400:
+            try:
+                err = json.loads(resp.content or b"")
+                raise RuntimeError(f"HTTP {resp.status_code}: {json.dumps(err, ensure_ascii=False)}")
+            except Exception:
+                try:
+                    body = (resp.content or b"")[:2000].decode("utf-8", errors="replace")
+                except Exception:
+                    body = resp.text[:2000]
+                raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+
+        try:
+            data = json.loads(resp.content or b"{}")
+        except Exception:
+            data = resp.json()
+        try:
+            choices = data.get("choices") or []
+            if choices:
+                msg = choices[0].get("message") or {}
+                content = msg.get("content")
+                if content is not None:
+                    if isinstance(content, list):
+                        parts = []
+                        for it in content:
+                            if isinstance(it, dict):
+                                t = it.get("text") or it.get("content")
+                                if t:
+                                    parts.append(str(t))
+                            elif it:
+                                parts.append(str(it))
+                        return "\n".join([p for p in parts if p]).strip()
+                    return str(content).strip()
+                reasoning = msg.get("reasoning_content")
+                if reasoning is not None:
+                    return str(reasoning).strip()
+
+                delta = choices[0].get("delta") or {}
+                d_content = delta.get("content")
+                if d_content is not None:
+                    return str(d_content).strip()
+                text = choices[0].get("text")
+                if text is not None:
+                    return str(text).strip()
+        except Exception:
+            pass
+
+        if isinstance(data, dict):
+            for k in ["output_text", "result", "message", "content", "answer"]:
+                v = data.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+        raise RuntimeError(f"无法解析AI返回结果: {json.dumps(data, ensure_ascii=False)[:800]}")
+
+    def show_page(self, page_id):
+        """切换页面显示"""
+        # 隐藏所有页面
+        for p in self.pages.values():
+            p.pack_forget()
         
-        # 确保UI输入框显示正确的值
-        self.idle_time_var.set(str(self.idle_time_minutes))
-        
-        self.screensaver_window = None
-        self.screensaver_images = []
-        self.is_fetching = False
+        # 显示选中的页面
+        if page_id in self.pages:
+            self.pages[page_id].pack(fill=BOTH, expand=YES)
+            
+        # 更新导航按钮样式
+        for pid, btn in self.nav_btns.items():
+            if pid == page_id:
+                btn.configure(bootstyle="primary")
+            else:
+                btn.configure(bootstyle="link")
+
+        if page_id == "info_push" and hasattr(self, "info_push_widget"):
+            try:
+                self.root.after(0, self.info_push_widget.refresh_content)
+            except Exception:
+                pass
 
     def load_config(self):
         try:
@@ -1473,12 +3663,32 @@ class WallpaperApp:
             self.auto_screensaver_enabled = config.get("auto_screensaver_enabled", False)
             self.idle_time_minutes = config.get("idle_time_minutes", 5)
             self.api_token = config.get("api_token", "")  # 添加API Token配置
+            self.current_theme = config.get("current_theme", "litera")  # 读取主题配置
+            self.auto_wallpaper_change = config.get("auto_wallpaper_change", False)
+            self.wallpaper_interval_minutes = config.get("wallpaper_interval_minutes", 30)
+            self.weather_city = config.get("weather_city", "自动")
+            self.ai_base_url = config.get("ai_base_url", getattr(self, "ai_base_url", "https://api.openai.com/v1"))
+            self.ai_api_key = config.get("ai_api_key", "")
+            self.ai_model = config.get("ai_model", getattr(self, "ai_model", "gpt-4o-mini"))
+            self.ai_system_prompt = config.get("ai_system_prompt", "")
+            self.ai_chat_history = config.get("ai_chat_history", [])
+            self.ai_current_session_id = config.get("ai_current_session_id", "")
         except (FileNotFoundError, json.JSONDecodeError):
             self.wallpaper_dir = os.path.join(PICTURES_DIR, "Wallpapers")
             self.screensaver_dir = os.path.join(PICTURES_DIR, "screensaver_images")
             self.auto_screensaver_enabled = False
             self.idle_time_minutes = 5
             self.api_token = ""  # 默认为空
+            self.auto_wallpaper_change = False
+            self.wallpaper_interval_minutes = 30
+            self.current_theme = "litera"
+            self.weather_city = "自动"
+            self.ai_base_url = getattr(self, "ai_base_url", "https://api.openai.com/v1")
+            self.ai_api_key = ""
+            self.ai_model = getattr(self, "ai_model", "gpt-4o-mini")
+            self.ai_system_prompt = ""
+            self.ai_chat_history = []
+            self.ai_current_session_id = ""
         os.makedirs(self.wallpaper_dir, exist_ok=True)
         os.makedirs(self.screensaver_dir, exist_ok=True)
 
@@ -1492,7 +3702,17 @@ class WallpaperApp:
                 "screensaver_dir": self.screensaver_dir,
                 "auto_screensaver_enabled": self.auto_screensaver_enabled,
                 "idle_time_minutes": self.idle_time_minutes,
-                "api_token": self.api_token  # 添加API Token保存
+                "api_token": self.api_token,  # 添加API Token保存
+                "auto_wallpaper_change": getattr(self, "auto_wallpaper_change", False),
+                "wallpaper_interval_minutes": getattr(self, "wallpaper_interval_minutes", 30),
+                "current_theme": getattr(self, "current_theme", "litera"),
+                "weather_city": getattr(self, 'weather_city', '自动'),
+                "ai_base_url": getattr(self, "ai_base_url", "https://api.openai.com/v1"),
+                "ai_api_key": getattr(self, "ai_api_key", ""),
+                "ai_model": getattr(self, "ai_model", "gpt-4o-mini"),
+                "ai_system_prompt": getattr(self, "ai_system_prompt", ""),
+                "ai_chat_history": getattr(self, "ai_chat_history", []),
+                "ai_current_session_id": getattr(self, "ai_current_session_id", ""),
             }
             
             with open(CONFIG_PATH, 'w') as f: 
@@ -1512,7 +3732,7 @@ class WallpaperApp:
                                "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 
                                0, winreg.KEY_READ)
             try:
-                value, _ = winreg.QueryValueEx(key, "WallpaperDownloader")
+                value, _ = winreg.QueryValueEx(key, "MagicDesktopAssistant")
                 winreg.CloseKey(key)
                 return True
             except FileNotFoundError:
@@ -1530,13 +3750,13 @@ class WallpaperApp:
                                "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 
                                0, winreg.KEY_SET_VALUE | winreg.KEY_READ)
             
-            # 查找所有的WallpaperDownloader项（可能有重复）
+            # 查找所有的MagicDesktopAssistant项（可能有重复）
             entries_to_remove = []
             i = 0
             while True:
                 try:
                     name, value, reg_type = winreg.EnumValue(key, i)
-                    if name == "WallpaperDownloader":
+                    if name == "MagicDesktopAssistant":
                         # 检查文件是否存在
                         clean_path = value.strip('"').split('"')[0]
                         if not os.path.exists(clean_path):
@@ -1587,11 +3807,11 @@ class WallpaperApp:
                 if not os.path.exists(clean_path):
                     raise FileNotFoundError(f"程序文件不存在: {clean_path}")
                 
-                winreg.SetValueEx(key, "WallpaperDownloader", 0, winreg.REG_SZ, app_path)
+                winreg.SetValueEx(key, "MagicDesktopAssistant", 0, winreg.REG_SZ, app_path)
                 print(f"已添加开机启动: {app_path}")
             else:
                 try:
-                    winreg.DeleteValue(key, "WallpaperDownloader")
+                    winreg.DeleteValue(key, "MagicDesktopAssistant")
                     print("已取消开机启动")
                 except FileNotFoundError:
                     print("开机启动项不存在")
@@ -1693,44 +3913,73 @@ class WallpaperApp:
         try: subprocess.run(["explorer", os.path.realpath(self.screensaver_dir)])
         except Exception as e: self.update_label(f"无法打开文件夹: {e}")
 
+    def clear_screensaver_cache(self):
+        """清理屏保缓存"""
+        if hasattr(self, 'screensaver_manager'):
+            self.screensaver_manager.clear_screensaver_cache()
+        else:
+            messagebox.showwarning("提示", "屏保功能尚未初始化", parent=self.root)
+
+    def start_screensaver(self):
+        """启动屏保"""
+        try:
+            if not hasattr(self, 'screensaver_manager'):
+                self.screensaver_manager = ScreensaverManager(self.root, self.screensaver_dir, self.update_label)
+                self.screensaver_manager.auto_screensaver_enabled = self.auto_screensaver_enabled
+                self.screensaver_manager.idle_time_minutes = self.idle_time_minutes
+                self.screensaver_manager.start_idle_check()
+            self.screensaver_manager.start_screensaver()
+        except Exception as e:
+            messagebox.showerror("错误", f"启动屏保失败: {e}", parent=self.root)
+
+    def init_tray_icon(self):
+        """初始化并运行托盘图标"""
+        try:
+            if getattr(self, "tray_icon", None):
+                return
+            image = self.get_tray_icon_image()
+            menu = (
+                pystray.MenuItem('显示窗口', self.show_from_tray, default=True), 
+                pystray.MenuItem('退出', self.quit_from_tray)
+            )
+            self.tray_icon = pystray.Icon("wallpaper_app", image, "魔力桌面助手", menu)
+            threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        except Exception as e:
+            print(f"托盘图标初始化失败: {e}")
+
     def hide_to_tray(self):
         """隐藏到系统托盘"""
         try:
+            # 隐藏任务栏图标，仅保留托盘
+            self.safe_after(0, self.root.withdraw)
+        except Exception:
             self.root.withdraw()
             
-            # 获取托盘图标
-            image = self.get_tray_icon_image()
-            
-            # 创建托盘菜单
-            menu = (
-                pystray.MenuItem('显示窗口', self.show_from_tray, default=True), 
-                pystray.MenuItem('退出', self.quit_app)
-            )
-            
-            # 创建托盘图标
-            self.tray_icon = pystray.Icon("wallpaper_app", image, "魔力桌面助手", menu)
-            
-            # 在单独线程中运行托盘图标
-            self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
-            self.tray_thread.start()
-            
-        except Exception as e:
-            print(f"托盘功能启动失败: {e}")
-            # 如果托盘功能失败，至少不要让程序崩溃
-            self.root.deiconify()  # 重新显示窗口
-
     def show_from_tray(self, icon=None, item=None):
         """从托盘显示窗口"""
-        try:
-            if self.tray_icon: 
-                self.tray_icon.stop()
-            self.root.after(0, self.root.deiconify)
-        except Exception as e:
-            print(f"从托盘显示窗口失败: {e}")
+        def _show():
+            try:
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
+            except Exception:
+                pass
+        self.safe_after(0, _show)
+
+    def quit_from_tray(self, icon=None, item=None):
+        """从托盘退出"""
+        self.safe_after(0, self.quit_app)
+
 
     def quit_app(self, icon=None, item=None):
         """退出应用程序"""
         try:
+            try:
+                if getattr(self, "floating_ball", None):
+                    self.floating_ball.destroy()
+                    self.floating_ball = None
+            except Exception:
+                pass
             if self.tray_icon: 
                 self.tray_icon.stop()
             self.is_fetching = False
@@ -1752,292 +4001,122 @@ class WallpaperApp:
             import sys
             sys.exit(0)
 
-    def get_wallpaper_interval_ms(self):
+    def restart_app(self):
+        """重启应用程序"""
         try:
-            minutes = float(self.wallpaper_interval_entry.get())
-            return int(minutes * 60 * 1000) if minutes > 0 else None
-        except (ValueError, TypeError): return None
+            # 1. 禁用所有交互
+            for btn in getattr(self, "menu_buttons", []) or []:
+                try:
+                    btn.configure(state="disabled")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-    def get_screensaver_interval_ms(self):
+        # 2. 修改窗口标题，防止单实例检查误判
         try:
-            minutes = float(self.screensaver_interval_entry.get())
-            return int(minutes * 60 * 1000) if minutes > 0 else None
-        except (ValueError, TypeError): return None
+            self.root.title("DeskWallpapers_Restarting")
+            self.root.withdraw() # 隐藏窗口
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, "floating_ball", None):
+                self.floating_ball.destroy()
+                self.floating_ball = None
+        except Exception:
+            pass
+
+        # 3. 停止托盘图标
+        try:
+            if getattr(self, "tray_icon", None):
+                self.tray_icon.stop()
+        except Exception:
+            pass
+
+        # 4. 释放互斥锁
+        try:
+            global app_mutex
+            if app_mutex and sys.platform.startswith("win"):
+                ctypes.windll.kernel32.CloseHandle(app_mutex)
+                app_mutex = None
+        except Exception:
+            pass
+
+        # 5. 启动新进程
+        try:
+            env = os.environ.copy()
+            if getattr(sys, "frozen", False):
+                args = [sys.executable] + sys.argv[1:]
+                env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+                env.pop("_MEIPASS2", None)
+                env.pop("_PYI_APPLICATION_HOME_DIR", None)
+                env.pop('TCL_LIBRARY', None)
+                env.pop('TK_LIBRARY', None)
+            else:
+                args = [sys.executable] + sys.argv
+            
+            # 使用 subprocess.Popen 启动新进程
+            subprocess.Popen(args, cwd=os.getcwd(), close_fds=True, env=env)
+        except Exception as e:
+            print(f"重启失败: {e}")
+            # 如果重启失败，尝试恢复窗口
+            try:
+                self.root.deiconify()
+                self.root.title("魔力桌面助手")
+                messagebox.showerror("重启失败", f"无法重启应用: {e}")
+            except:
+                pass
+            return
+
+        # 6. 退出当前进程
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
+
 
     def update_label(self, text):
-        if self.root.winfo_exists(): self.label.config(text=text)
+        if not getattr(self, "root", None) or not self.root.winfo_exists():
+            return
 
-    def get_high_res_image(self):
-        try: 
-            # 使用支持随机索引的必应壁纸API，确保每次获取不同的壁纸
-            response = requests.get("https://bingw.jasonzeng.dev/?resolution=UHD&index=random", timeout=20)
-            return response.content
-        except requests.RequestException: return None
-
-    def set_wallpaper(self, image_path):
-        try:
-            ctypes.windll.user32.SystemParametersInfoW(20, 0, image_path, 3)
-            self.update_label("壁纸更换成功！")
-        except Exception as e: self.update_label(f"设置壁纸失败: {e}")
-
-    def change_wallpaper_logic(self):
-        self.update_label("正在下载高清壁纸...")
-        image_data = self.get_high_res_image()
-        if not image_data:
-            self.update_label("下载壁纸失败，请检查网络"); return
-        try:
-            Image.open(io.BytesIO(image_data))
-            new_wallpaper_path = os.path.join(self.wallpaper_dir, f"wallpaper_{int(time.time())}.jpg")
-            with open(new_wallpaper_path, "wb") as f: f.write(image_data)
-            self.set_wallpaper(new_wallpaper_path)
-            self.manage_cache(self.wallpaper_dir)
-        except (IOError, OSError) as e: self.update_label(f"保存壁纸失败: {e}")
-        except Exception: self.update_label("下载的图片文件无效")
-
-    def start_change_wallpaper_thread(self):
-        self.change_button.config(state=DISABLED)
-        threading.Thread(target=self._threaded_change_and_reenable, daemon=True).start()
-
-    def _threaded_change_and_reenable(self):
-        self.change_wallpaper_logic()
-        if self.root.winfo_exists(): self.root.after(0, self.change_button.config, {'state': NORMAL})
-
-    def toggle_auto_change(self):
-        if self.auto_change_var.get():
-            if self.get_wallpaper_interval_ms():
-                self.update_label("已开启自动更换壁纸")
-                self.schedule_next_wallpaper_change()
-            else:
-                self.update_label("请输入有效的壁纸间隔时间"); self.auto_change_var.set(False)
-        else:
-            if self.wallpaper_timer: self.root.after_cancel(self.wallpaper_timer)
-            self.update_label("已关闭自动更换壁纸")
-
-    def schedule_next_wallpaper_change(self):
-        interval = self.get_wallpaper_interval_ms()
-        if interval and self.auto_change_var.get():
-            self.wallpaper_timer = self.root.after(interval, self.run_scheduled_wallpaper_change)
-
-    def run_scheduled_wallpaper_change(self):
-        if self.auto_change_var.get():
-            self.start_change_wallpaper_thread(); self.schedule_next_wallpaper_change()
-
-    def clear_screensaver_cache(self):
-        if self.show_center_messagebox_dialog("确认", f"确定要删除 {self.screensaver_dir} 内的所有图片吗？", "yesno"):
+        def _do():
             try:
-                for f in os.listdir(self.screensaver_dir): os.remove(os.path.join(self.screensaver_dir, f))
-                self.screensaver_images.clear(); self.update_label("屏保缓存已清理")
-            except Exception as e: self.update_label(f"清理缓存失败: {e}")
-
-    def start_screensaver(self):
-        if self.screensaver_window: return
-        self.screensaver_active = True  # 设置屏保激活状态
-        self.screensaver_window = ttk.Toplevel(self.root)
-        self.screensaver_window.attributes("-fullscreen", True)
-        self.screensaver_window.configure(bg='black')
-        self.screensaver_window.bind("<Key>", self.exit_screensaver)
-        self.screensaver_window.bind("<Motion>", self.exit_screensaver)
-        self.screensaver_window.bind("<Button-1>", self.exit_screensaver)  # 鼠标点击退出
-        self.ss_label = ttk.Label(self.screensaver_window, background='black', foreground='white', text="正在加载图片...", font=("Arial", 24))
-        self.ss_label.pack(expand=YES, fill=BOTH); self.ss_label.focus_set()
-        self.load_cached_images()
-        if self.screensaver_images: 
-            self.update_screensaver_image()
-        else: 
-            self.wait_for_first_image()
-        # 启动智能预加载机制
-        self.schedule_preload_next_image()
-
-    def wait_for_first_image(self):
-        if not self.screensaver_window: return
-        if self.screensaver_images: 
-            self.update_screensaver_image()
-        else: 
-            # 如果没有图片，启动下载并继续等待
-            threading.Thread(target=self.download_single_screensaver_image, daemon=True).start()
-            self.screensaver_timer = self.screensaver_window.after(1000, self.wait_for_first_image)
-
-    def load_cached_images(self):
-        try:
-            # 获取所有图片文件
-            image_files = [os.path.join(self.screensaver_dir, f) for f in os.listdir(self.screensaver_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-            valid_images = []
-            
-            # 验证每个图片文件的有效性
-            for image_path in image_files:
-                try:
-                    with Image.open(image_path) as img:
-                        # 检查图片是否有效（尺寸大于100x100）
-                        if img.width > 100 and img.height > 100:
-                            valid_images.append(image_path)
-                        else:
-                            # 删除无效图片
-                            os.remove(image_path)
-                            print(f"删除无效图片: {image_path}")
-                except Exception:
-                    # 删除损坏的图片文件
-                    try:
-                        os.remove(image_path)
-                        print(f"删除损坏图片: {image_path}")
-                    except:
-                        pass
-            
-            self.screensaver_images = valid_images
-            # 按文件名排序以确保一致的顺序
-            self.screensaver_images.sort()
-            # 重置已使用图片记录
-            self.used_images.clear()
-        except FileNotFoundError: 
-            self.screensaver_images = []
-            self.used_images.clear()
-
-    def schedule_preload_next_image(self):
-        """初始化时启动预加载机制"""
-        if not self.screensaver_window: return
-        interval = self.get_screensaver_interval_ms() or 60000
-        # 在切换间隔的75%时开始预加载下一张图片
-        preload_delay = int(interval * 0.75)
-        self.screensaver_window.after(preload_delay, self.preload_next_image)
-
-    def preload_next_image(self):
-        """智能预加载下一张屏保图片"""
-        if not self.screensaver_window: return
-        
-        # 检查是否需要下载新图片
-        # 如果当前图片快用完了，或者缓存图片少于3张，就下载新图片
-        unused_count = len(self.screensaver_images) - len(self.used_images)
-        if unused_count <= 1 or len(self.screensaver_images) < 3:
-            threading.Thread(target=self.download_single_screensaver_image, daemon=True).start()
-
-    def download_single_screensaver_image(self):
-        """下载单张屏保图片"""
-        try:
-            image_data = self.get_high_res_image()
-            if image_data and len(image_data) > 1000:  # 确保数据不为空且有足够大小
-                # 验证图片格式并检查图片是否有效
-                img = Image.open(io.BytesIO(image_data))
-                # 检查图片尺寸，确保不是无效图片
-                if img.width > 100 and img.height > 100:
-                    path = os.path.join(self.screensaver_dir, f"ss_{int(time.time() * 1000)}.jpg")
-                    with open(path, 'wb') as f: 
-                        f.write(image_data)
-                    if path not in self.screensaver_images: 
-                        self.screensaver_images.append(path)
-                    self.manage_cache(self.screensaver_dir)
-                    return True  # 表示下载成功
-        except Exception as e:
-            print(f"下载屏保图片失败: {e}")
-        return False  # 表示下载失败
-
-    def resize_and_crop(self, img, target_width, target_height):
-        img_ratio = img.width / img.height; target_ratio = target_width / target_height
-        if target_ratio > img_ratio:
-            new_height = int(target_width / img_ratio)
-            img = img.resize((target_width, new_height), Image.Resampling.LANCZOS)
-            crop_y = (new_height - target_height) // 2
-            return img.crop((0, crop_y, target_width, crop_y + target_height))
-        else:
-            new_width = int(target_height * img_ratio)
-            img = img.resize((new_width, target_height), Image.Resampling.LANCZOS)
-            crop_x = (new_width - target_width) // 2
-            return img.crop((crop_x, 0, crop_x + target_width, target_height))
-
-    def update_screensaver_image(self):
-        if not self.screensaver_window: return
-        
-        # 如果没有图片或当前图片已全部使用，开始新一轮
-        if not self.screensaver_images or len(self.used_images) >= len(self.screensaver_images):
-            self.used_images.clear()
-            if not self.screensaver_images:
-                # 没有图片时，下载一张新的
-                threading.Thread(target=self.download_single_screensaver_image, daemon=True).start()
-                self.screensaver_timer = self.screensaver_window.after(1000, self.update_screensaver_image)
-                return
-        
-        try:
-            # 选择下一张未使用的图片
-            available_images = [img for img in self.screensaver_images if img not in self.used_images]
-            if not available_images:
-                # 如果没有可用图片，清空已使用列表并重新开始
-                self.used_images.clear()
-                available_images = self.screensaver_images
-            
-            path = available_images[0] if available_images else None
-            if not path:
-                self.screensaver_timer = self.screensaver_window.after(1000, self.update_screensaver_image)
-                return
-                
-            self.used_images.add(path)
-            
-            w, h = self.screensaver_window.winfo_width(), self.screensaver_window.winfo_height()
-            if w <= 1 or h <= 1: 
-                self.screensaver_window.after(100, self.update_screensaver_image)
-                return
-                
-            img = self.resize_and_crop(Image.open(path), w, h)
-            tk_img = ImageTk.PhotoImage(img)
-            self.ss_label.config(image=tk_img, text="")
-            self.ss_label.image = tk_img
-        except Exception:
-            if 'path' in locals() and path in self.screensaver_images: 
-                self.screensaver_images.remove(path)
-            try: 
-                os.remove(path)
-            except OSError: 
+                if self.root.winfo_exists():
+                    self.label.config(text=text)
+            except Exception:
                 pass
-                
-        interval = self.get_screensaver_interval_ms() or 60000
-        self.screensaver_timer = self.screensaver_window.after(interval, self.update_screensaver_image)
-        
-        # 智能预加载：在切换间隔的75%时开始预加载下一张图片
-        preload_delay = int(interval * 0.75)
-        self.screensaver_window.after(preload_delay, self.preload_next_image)
 
-    def exit_screensaver(self, event=None):
-        if self.screensaver_window:
-            self.screensaver_active = False  # 重置屏保状态
-            if self.screensaver_timer: self.screensaver_window.after_cancel(self.screensaver_timer)
-            self.screensaver_window.destroy()
-            self.screensaver_window = None
-            self.last_activity_time = time.time()  # 重置活动时间
-            # 重置图片使用状态，下次启动屏保时从头开始
-            self.used_images.clear()
-            self.update_label("屏保已退出")
+        if threading.current_thread() is threading.main_thread():
+            _do()
+        else:
+            self.safe_after(0, _do)
+
+
 
     # --- Daily News Functions ---
     def show_daily_news(self):
-        """显示每日早报窗口"""
+        """显示每日早报页面"""
         try:
-            if self.daily_news_window is None:
-                self.daily_news_window = DailyNewsWindow(self.root, self.daily_news_manager)
-                self.daily_news_window.show_news_window()
-            else:
-                # 检查窗口是否还存在
-                try:
-                    if self.daily_news_window.window.winfo_exists():
-                        self.daily_news_window.window.lift()
-                        self.daily_news_window.window.focus_force()
-                    else:
-                        # 窗口已被关闭，重新创建
-                        self.daily_news_window = DailyNewsWindow(self.root, self.daily_news_manager)
-                        self.daily_news_window.show_news_window()
-                except tk.TclError:
-                    # 窗口已被销毁，重新创建
-                    self.daily_news_window = DailyNewsWindow(self.root, self.daily_news_manager)
-                    self.daily_news_window.show_news_window()
+            self.show_page('news')
+            # 如果需要，可以调用刷新
+            # if hasattr(self, 'news_widget'):
+            #     self.news_widget.refresh_news()
         except Exception as e:
-            self.show_center_messagebox_dialog("错误", f"打开早报窗口失败: {str(e)}", "error")
+            self.show_center_messagebox_dialog("错误", f"打开早报页面失败: {str(e)}", "error")
 
     def refresh_daily_news(self):
         """刷新早报数据"""
         def refresh_thread():
             try:
                 self.daily_news_manager.fetch_news(force_refresh=True)
-                self.root.after(0, lambda: self.update_label("早报数据已刷新"))
-                if self.daily_news_window and self.daily_news_window.window.winfo_exists():
-                    self.daily_news_window.refresh_news()
+                self.safe_after(0, lambda: self.update_label("早报数据已刷新"))
+                if hasattr(self, 'news_widget'):
+                     self.safe_after(0, self.news_widget.refresh_news)
             except Exception as e:
-                self.root.after(0, lambda: self.update_label(f"刷新早报失败: {str(e)}"))
+                self.safe_after(0, lambda: self.update_label(f"刷新早报失败: {str(e)}"))
         
         threading.Thread(target=refresh_thread, daemon=True).start()
         self.update_label("正在刷新早报数据...")
@@ -2112,7 +4191,7 @@ class WallpaperApp:
         """显示集成功能窗口（日历天气）"""
         try:
             if not hasattr(self, 'integrated_features_window') or self.integrated_features_window is None:
-                self.integrated_features_window = IntegratedFeaturesWindow(self.root, self.integrated_features_manager)
+                self.integrated_features_window = IntegratedFeaturesWindow(self.root, self.integrated_features_manager, ui_after=self.safe_after)
             self.integrated_features_window.show()
         except Exception as e:
             messagebox.showerror("错误", f"显示集成功能失败: {e}", parent=self.root)
@@ -2121,7 +4200,7 @@ class WallpaperApp:
         """显示一诗一图功能"""
         try:
             if not hasattr(self, 'integrated_features_window') or self.integrated_features_window is None:
-                self.integrated_features_window = IntegratedFeaturesWindow(self.root, self.integrated_features_manager)
+                self.integrated_features_window = IntegratedFeaturesWindow(self.root, self.integrated_features_manager, ui_after=self.safe_after)
             self.integrated_features_window.show_poetry_tab()
         except Exception as e:
             messagebox.showerror("错误", f"显示一诗一图失败: {e}", parent=self.root)
@@ -2140,37 +4219,48 @@ class WallpaperApp:
         except Exception as e:
             messagebox.showerror("错误", f"刷新数据失败: {e}", parent=self.root)
 
-    def on_service_toggle(self, service_key):
-        """处理服务选择状态变化"""
+    def on_service_toggle(self, service_name):
+        """服务开关回调"""
         try:
-            # 这里可以添加服务选择状态变化时的逻辑
-            # 例如：保存配置、更新UI等
-            pass
+            # 更新InfoPushWidget (如果存在)
+            if hasattr(self, 'info_push_widget'):
+                selected_services = [k for k, v in self.service_vars.items() if v.get()]
+                self.info_push_widget.selected_services = selected_services
+            
+            # 打印日志
+            status = "启用" if self.service_vars[service_name].get() else "禁用"
+            name = self.service_names.get(service_name, service_name)
+            print(f"服务 {name} 已{status}")
+            
         except Exception as e:
             print(f"服务切换失败: {e}")
 
     def show_info_push(self):
-        """显示信息推送窗口"""
+        """显示信息推送页面"""
         try:
             # 检查Token是否已设置
             if not self.check_token_required():
                 return
             
-            # 获取选中的服务
-            selected_services = []
-            for service_name, var in self.service_vars.items():
-                if var.get():
-                    selected_services.append(service_name)
+            # 确保窗口显示并置顶
+            self.show_from_tray()
             
-            if not selected_services:
-                show_center_messagebox("提示", "请先选择要查看的服务", "warning")
-                return
+            # 切换到信息推送页面
+            self.show_page('info_push')
             
-            # 创建或显示ALAPI窗口
-            if not hasattr(self, 'alapi_window') or self.alapi_window is None:
-                self.alapi_window = ALAPIWindow(self.root, self.alapi_manager)
-            
-            self.alapi_window.show_services(selected_services)
+            # 更新选中的服务
+            if hasattr(self, 'info_push_widget'):
+                selected_services = [k for k, v in self.service_vars.items() if v.get()]
+                if not selected_services:
+                    show_center_messagebox("提示", "请先在设置中选择要查看的服务", "warning")
+                    return
+                
+                self.info_push_widget.selected_services = selected_services
+                
+                # 如果没有内容，自动刷新
+                # 注意：InfoPushWidget应该有机制判断是否需要刷新
+                self.info_push_widget.refresh_content()
+                
         except Exception as e:
             messagebox.showerror("错误", f"显示信息推送失败: {e}", parent=self.root)
 
@@ -2181,26 +4271,20 @@ class WallpaperApp:
             if not self.check_token_required():
                 return
             
-            # 获取选中的服务
-            selected_services = []
-            for service_name, var in self.service_vars.items():
-                if var.get():
-                    selected_services.append(service_name)
+            # 切换到页面
+            self.show_page('info_push')
             
-            if not selected_services:
-                show_center_messagebox("提示", "请先选择要刷新的服务", "warning")
-                return
-            
-            # 在后台线程中刷新数据
-            def refresh_thread():
+            # 强制刷新
+            if hasattr(self, 'info_push_widget'):
+                selected_services = [k for k, v in self.service_vars.items() if v.get()]
+                self.info_push_widget.selected_services = selected_services
+                
+                # 清除缓存
                 for service in selected_services:
                     self.alapi_manager.clear_cache(service)
+                    
+                self.info_push_widget.refresh_content()
                 
-                if hasattr(self, 'alapi_window') and self.alapi_window:
-                    self.alapi_window.refresh_services(selected_services)
-            
-            threading.Thread(target=refresh_thread, daemon=True).start()
-            show_center_messagebox("提示", "正在刷新数据，请稍候...")
         except Exception as e:
             messagebox.showerror("错误", f"刷新数据失败: {e}", parent=self.root)
 
@@ -2327,7 +4411,13 @@ class WallpaperApp:
                     "screensaver_dir": self.screensaver_dir,
                     "auto_screensaver_enabled": self.auto_screensaver_enabled,
                     "idle_time_minutes": self.idle_time_minutes,
-                    "api_token": self.api_token
+                    "api_token": self.api_token,
+                    "current_theme": getattr(self, "current_theme", "litera"),
+                    "weather_city": getattr(self, "weather_city", "自动"),
+                    "ai_base_url": getattr(self, "ai_base_url", "https://api.openai.com/v1"),
+                    "ai_api_key": getattr(self, "ai_api_key", ""),
+                    "ai_model": getattr(self, "ai_model", "gpt-4o-mini"),
+                    "ai_system_prompt": getattr(self, "ai_system_prompt", ""),
                 },
                 "calendar_reminders": [],
                 "daily_news_config": {},
@@ -2450,6 +4540,11 @@ class WallpaperApp:
                 self.auto_screensaver_enabled = main_config.get("auto_screensaver_enabled", self.auto_screensaver_enabled)
                 self.idle_time_minutes = main_config.get("idle_time_minutes", self.idle_time_minutes)
                 self.api_token = main_config.get("api_token", self.api_token)
+                self.weather_city = main_config.get("weather_city", getattr(self, "weather_city", "自动"))
+                self.ai_base_url = main_config.get("ai_base_url", getattr(self, "ai_base_url", "https://api.openai.com/v1"))
+                self.ai_api_key = main_config.get("ai_api_key", getattr(self, "ai_api_key", ""))
+                self.ai_model = main_config.get("ai_model", getattr(self, "ai_model", "gpt-4o-mini"))
+                self.ai_system_prompt = main_config.get("ai_system_prompt", getattr(self, "ai_system_prompt", ""))
                 
                 # 保存主配置
                 self.save_config()
@@ -2507,6 +4602,11 @@ class WallpaperApp:
             messagebox.showerror("错误", f"打开日历提醒失败: {str(e)}", parent=self.root)
 
 if __name__ == "__main__":
-    root = ttk.Window(themename="litera")
+    if sys.platform.startswith("win"):
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MagicDesktopAssistant")
+        except Exception:
+            pass
+    root = ttk.Window(themename=get_startup_theme())
     app = WallpaperApp(root)
     root.mainloop()

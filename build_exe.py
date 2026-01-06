@@ -37,7 +37,7 @@ def run_command(command, description="执行命令"):
             shell=True, 
             capture_output=True, 
             text=True,
-            encoding='utf-8'
+            errors='replace'
         )
         
         if result.returncode == 0:
@@ -355,10 +355,5 @@ if __name__ == "__main__":
         print_colored("\n构建失败，请检查错误信息并重试", "red")
         sys.exit(1)
     else:
-        print_colored("\n按任意键退出...", "cyan")
-        try:
-            input()
-        except:
-            pass
         sys.exit(0)
 

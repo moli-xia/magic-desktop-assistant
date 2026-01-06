@@ -11,6 +11,7 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
+from ttkbootstrap.scrolled import ScrolledFrame
 import threading
 import urllib3
 
@@ -20,7 +21,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 class IntegratedFeaturesManager:
     def __init__(self):
         # API配置
-        self.alapi_token = "heniptlw1z24ua5pcavpcp9nnmubti"  # ALAPI Token
+        self.alapi_token = ""  # ALAPI Token
         self.city = "北京"
         self.sentence_api = "https://v1.jinrishici.com/all.json"
         self.sentence_token = ""
@@ -35,6 +36,10 @@ class IntegratedFeaturesManager:
         self.calendar_cache = None
         self.poetry_cache = None
         self.last_update = {}
+        
+    def set_token(self, token):
+        """设置ALAPI Token"""
+        self.alapi_token = token
         
     def get_inspirational_quote(self):
         """获取励志语"""
@@ -266,10 +271,24 @@ class IntegratedFeaturesManager:
 
 
 class IntegratedFeaturesWindow:
-    def __init__(self, parent, features_manager):
+    def __init__(self, parent, features_manager, ui_after=None):
         self.parent = parent
         self.features_manager = features_manager
+        self.ui_after = ui_after
         self.window = None
+
+    def _ui(self, ms, callback):
+        if self.ui_after:
+            try:
+                self.ui_after(ms, callback)
+                return
+            except Exception:
+                pass
+        try:
+            if self.window and self.window.winfo_exists() and threading.current_thread() is threading.main_thread():
+                self.window.after(ms, callback)
+        except Exception:
+            pass
         
     def show_features_window(self):
         """显示集成功能窗口"""
@@ -331,66 +350,71 @@ class IntegratedFeaturesWindow:
         self.news_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.news_frame, text="📰 新闻")
         self.setup_news_tab()
-        
+
+    def show(self):
+        """显示窗口"""
+        self.show_features_window()
+
+    def show_poetry_tab(self):
+        """显示诗词选项卡"""
+        self.show_features_window()
+        self.notebook.select(self.poetry_frame)
+
     def setup_calendar_tab(self):
         """设置日历选项卡"""
-        # 日历信息显示区域
-        calendar_info_frame = ttk.LabelFrame(self.calendar_frame, text="今日信息", padding=15)
-        calendar_info_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        self.scrolled_frame = ScrolledFrame(self.calendar_frame, autohide=True)
+        self.scrolled_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        self._setup_scrolling(self.scrolled_frame)
+        self._apply_scrolled_theme(self.scrolled_frame)
         
-        self.calendar_text = scrolledtext.ScrolledText(calendar_info_frame, height=15, 
-                                                      font=("Microsoft YaHei", 12))
-        self.calendar_text.pack(fill=BOTH, expand=True)
-        
-        # 刷新按钮
-        ttk.Button(calendar_info_frame, text="刷新日历", 
+        # 刷新按钮容器
+        btn_frame = ttk.Frame(self.calendar_frame)
+        btn_frame.pack(fill=X, padx=10, pady=(0, 10))
+        ttk.Button(btn_frame, text="刷新日历", 
                   command=self.refresh_calendar_data,
-                  bootstyle=INFO).pack(pady=(10, 0))
+                  bootstyle=INFO).pack(side=RIGHT)
         
     def setup_weather_tab(self):
         """设置天气选项卡"""
-        # 天气信息显示区域
-        weather_info_frame = ttk.LabelFrame(self.weather_frame, text="天气信息", padding=15)
-        weather_info_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        self.weather_scrolled = ScrolledFrame(self.weather_frame, autohide=True)
+        self.weather_scrolled.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        self._setup_scrolling(self.weather_scrolled)
+        self._apply_scrolled_theme(self.weather_scrolled)
         
-        self.weather_text = scrolledtext.ScrolledText(weather_info_frame, height=15,
-                                                     font=("Microsoft YaHei", 12))
-        self.weather_text.pack(fill=BOTH, expand=True)
-        
-        # 刷新按钮
-        ttk.Button(weather_info_frame, text="刷新天气", 
+        # 刷新按钮容器
+        btn_frame = ttk.Frame(self.weather_frame)
+        btn_frame.pack(fill=X, padx=10, pady=(0, 10))
+        ttk.Button(btn_frame, text="刷新天气", 
                   command=self.refresh_weather_data,
-                  bootstyle=INFO).pack(pady=(10, 0))
+                  bootstyle=INFO).pack(side=RIGHT)
         
     def setup_poetry_tab(self):
         """设置诗词选项卡"""
-        # 诗词显示区域
-        poetry_info_frame = ttk.LabelFrame(self.poetry_frame, text="今日诗词", padding=15)
-        poetry_info_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        self.poetry_scrolled = ScrolledFrame(self.poetry_frame, autohide=True)
+        self.poetry_scrolled.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        self._setup_scrolling(self.poetry_scrolled)
+        self._apply_scrolled_theme(self.poetry_scrolled)
         
-        self.poetry_text = scrolledtext.ScrolledText(poetry_info_frame, height=15,
-                                                    font=("Microsoft YaHei", 14))
-        self.poetry_text.pack(fill=BOTH, expand=True)
-        
-        # 刷新按钮
-        ttk.Button(poetry_info_frame, text="换一首", 
+        # 刷新按钮容器
+        btn_frame = ttk.Frame(self.poetry_frame)
+        btn_frame.pack(fill=X, padx=10, pady=(0, 10))
+        ttk.Button(btn_frame, text="换一首", 
                   command=self.refresh_poetry_data,
-                  bootstyle=INFO).pack(pady=(10, 0))
+                  bootstyle=INFO).pack(side=RIGHT)
         
     def setup_news_tab(self):
         """设置新闻选项卡"""
-        # 新闻显示区域
-        news_info_frame = ttk.LabelFrame(self.news_frame, text="60秒读懂世界", padding=15)
-        news_info_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        self.news_scrolled = ScrolledFrame(self.news_frame, autohide=True)
+        self.news_scrolled.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        self._setup_scrolling(self.news_scrolled)
+        self._apply_scrolled_theme(self.news_scrolled)
         
-        self.news_text = scrolledtext.ScrolledText(news_info_frame, height=15,
-                                                  font=("Microsoft YaHei", 11))
-        self.news_text.pack(fill=BOTH, expand=True)
-        
-        # 刷新按钮
-        ttk.Button(news_info_frame, text="刷新新闻", 
+        # 刷新按钮容器
+        btn_frame = ttk.Frame(self.news_frame)
+        btn_frame.pack(fill=X, padx=10, pady=(0, 10))
+        ttk.Button(btn_frame, text="刷新新闻", 
                   command=self.refresh_news_data,
-                  bootstyle=INFO).pack(pady=(10, 0))
+                  bootstyle=INFO).pack(side=RIGHT)
         
     def load_all_data(self):
         """加载所有数据"""
@@ -403,90 +427,253 @@ class IntegratedFeaturesWindow:
         self.refresh_poetry_data()
         self.refresh_news_data()
         
+    def _clear_frame(self, frame):
+        """清空Frame内容"""
+        for child in frame.winfo_children():
+            child.destroy()
+
+    def _setup_scrolling(self, scrolled_frame):
+        canvas = getattr(scrolled_frame, "canvas", None) or getattr(scrolled_frame, "_canvas", None)
+        target = canvas if canvas and hasattr(canvas, "yview_scroll") else None
+        if target is None and hasattr(scrolled_frame, "yview_scroll"):
+            target = scrolled_frame
+        if target is None:
+            return
+
+        def on_mousewheel(event):
+            if hasattr(event, "delta") and event.delta:
+                delta = int(-1 * (event.delta / 120))
+                delta = delta if delta != 0 else (-1 if event.delta > 0 else 1)
+                target.yview_scroll(delta, "units")
+                return "break"
+            return None
+
+        for w in filter(None, [target, getattr(scrolled_frame, "container", None)]):
+            try:
+                w.bind("<MouseWheel>", on_mousewheel, add="+")
+            except Exception:
+                pass
+
+    def _apply_scrolled_theme(self, scrolled_frame):
+        canvas = getattr(scrolled_frame, "canvas", None) or getattr(scrolled_frame, "_canvas", None)
+        if not canvas:
+            return
+        try:
+            style = ttk.Style()
+            bg = style.colors.bg
+        except Exception:
+            return
+        try:
+            canvas.configure(background=bg, highlightthickness=0, bd=0)
+        except Exception:
+            pass
+
     def refresh_calendar_data(self):
         """刷新日历数据"""
         def update_calendar():
             calendar_info = self.features_manager.get_calendar_info()
-            if 'error' in calendar_info:
-                text = f"获取日历信息失败: {calendar_info['error']}"
-            else:
-                text = f"""📅 今日日期
-{calendar_info['date']} {calendar_info['weekday']}
-
-🏮 农历信息
-农历：{calendar_info.get('lunar_year', '')}【{calendar_info.get('zodiac', '')}】年 {calendar_info.get('lunar_month', '')}{calendar_info.get('lunar_day', '')}日
-
-🌸 节气信息
-今日节气：{calendar_info.get('solar_term', '无')}
-下一节气：{calendar_info.get('next_solar_term', '')} {calendar_info.get('next_solar_term_date', '')}
-
-💡 励志语
-{self.features_manager.get_inspirational_quote()}"""
             
-            self.calendar_text.delete(1.0, tk.END)
-            self.calendar_text.insert(1.0, text)
+            # 在主线程更新UI
+            def _update_ui():
+                self._clear_frame(self.scrolled_frame.container)
+                container = self.scrolled_frame.container
+                
+                if 'error' in calendar_info:
+                    ttk.Label(container, text=f"获取日历信息失败: {calendar_info['error']}", 
+                             bootstyle=DANGER).pack(pady=20)
+                    return
+
+                # 今日日期卡片
+                date_card = ttk.Labelframe(container, text="📅 今日日期", padding=15, bootstyle="primary")
+                date_card.pack(fill=X, pady=(0, 10))
+                
+                ttk.Label(date_card, text=f"{calendar_info['date']} {calendar_info['weekday']}", 
+                         font=("Microsoft YaHei", 16, "bold"), bootstyle="primary").pack(anchor=CENTER)
+                
+                # 农历信息卡片
+                lunar_card = ttk.Labelframe(container, text="🏮 农历信息", padding=15, bootstyle="info")
+                lunar_card.pack(fill=X, pady=(0, 10))
+                
+                lunar_text = f"农历：{calendar_info.get('lunar_year', '')}【{calendar_info.get('zodiac', '')}】年 {calendar_info.get('lunar_month', '')}{calendar_info.get('lunar_day', '')}日"
+                ttk.Label(lunar_card, text=lunar_text, font=("Microsoft YaHei", 12)).pack(anchor=W)
+                
+                # 节气信息卡片
+                solar_card = ttk.Labelframe(container, text="🌸 节气信息", padding=15, bootstyle="success")
+                solar_card.pack(fill=X, pady=(0, 10))
+                
+                ttk.Label(solar_card, text=f"今日节气：{calendar_info.get('solar_term', '无')}", 
+                         font=("Microsoft YaHei", 11)).pack(anchor=W)
+                ttk.Label(solar_card, text=f"下一节气：{calendar_info.get('next_solar_term', '')} {calendar_info.get('next_solar_term_date', '')}", 
+                         font=("Microsoft YaHei", 11)).pack(anchor=W, pady=(5, 0))
+                
+                # 励志语卡片
+                quote_card = ttk.Labelframe(container, text="💡 励志语", padding=15, bootstyle="warning")
+                quote_card.pack(fill=X, pady=(0, 10))
+                
+                quote_text = self.features_manager.get_inspirational_quote()
+                ttk.Label(quote_card, text=quote_text, font=("Microsoft YaHei", 12, "italic"), 
+                         wraplength=700, justify=CENTER).pack(fill=X)
+
+            self._ui(0, _update_ui)
             
-        threading.Thread(target=update_calendar, daemon=True).start()
+        if threading.current_thread() is threading.main_thread():
+            threading.Thread(target=update_calendar, daemon=True).start()
+        else:
+            update_calendar()
         
     def refresh_weather_data(self):
         """刷新天气数据"""
         def update_weather():
             weather_info = self.features_manager.get_weather_info()
-            if 'error' in weather_info:
-                text = f"获取天气信息失败:\n{weather_info['error']}\n\n请在设置中配置彩云天气API Key"
-            else:
-                text = f"""🌤️ 当前天气
-天气：{weather_info['status']} 
-温度：{weather_info['temperature']}℃ 【{weather_info['max_temp']}℃/{weather_info['min_temp']}℃】
-
-💧 环境信息
-湿度：{weather_info['humidity']:.1f}%
-能见度：{weather_info['visibility']}km
-
-🌬️ 空气质量
-AQI：{weather_info['aqi']}
-PM2.5：{weather_info['pm25']}
-
-📊 天气预报
-{weather_info['forecast']}"""
             
-            self.weather_text.delete(1.0, tk.END)
-            self.weather_text.insert(1.0, text)
+            def _update_ui():
+                self._clear_frame(self.weather_scrolled.container)
+                container = self.weather_scrolled.container
+                
+                if 'error' in weather_info:
+                    ttk.Label(container, text=f"获取天气信息失败:\n{weather_info['error']}", 
+                             bootstyle=DANGER).pack(pady=20)
+                    return
+
+                # 当前天气大卡片
+                main_card = ttk.Frame(container, padding=20, bootstyle="info")
+                main_card.pack(fill=X, pady=(0, 15))
+                
+                # 城市和状态
+                top_frame = ttk.Frame(main_card)
+                top_frame.pack(fill=X)
+                ttk.Label(top_frame, text=f"{self.features_manager.city} | {weather_info['status']}", 
+                         font=("Microsoft YaHei", 14), bootstyle="inverse-info").pack(side=LEFT)
+                
+                # 温度
+                temp_frame = ttk.Frame(main_card)
+                temp_frame.pack(fill=X, pady=10)
+                ttk.Label(temp_frame, text=f"{weather_info['temperature']}°", 
+                         font=("Microsoft YaHei", 48, "bold"), bootstyle="inverse-info").pack(side=LEFT)
+                
+                # 高低温
+                range_frame = ttk.Frame(main_card)
+                range_frame.pack(fill=X)
+                ttk.Label(range_frame, text=f"H: {weather_info['max_temp']}°  L: {weather_info['min_temp']}°", 
+                         font=("Microsoft YaHei", 12), bootstyle="inverse-info").pack(side=LEFT)
+
+                # 环境信息卡片 (网格布局)
+                env_card = ttk.Labelframe(container, text="环境指数", padding=15)
+                env_card.pack(fill=X, pady=(0, 10))
+                
+                # 湿度
+                ttk.Label(env_card, text="湿度", font=("Microsoft YaHei", 10, "bold"), foreground="gray").grid(row=0, column=0, sticky=W, padx=20)
+                ttk.Label(env_card, text=f"{weather_info['humidity']:.1f}%", font=("Microsoft YaHei", 14)).grid(row=1, column=0, sticky=W, padx=20, pady=(0, 10))
+                
+                # 能见度
+                ttk.Label(env_card, text="能见度", font=("Microsoft YaHei", 10, "bold"), foreground="gray").grid(row=0, column=1, sticky=W, padx=20)
+                ttk.Label(env_card, text=f"{weather_info['visibility']}km", font=("Microsoft YaHei", 14)).grid(row=1, column=1, sticky=W, padx=20, pady=(0, 10))
+                
+                # 空气质量
+                ttk.Label(env_card, text="空气质量", font=("Microsoft YaHei", 10, "bold"), foreground="gray").grid(row=2, column=0, sticky=W, padx=20)
+                ttk.Label(env_card, text=f"{weather_info['air_quality']} (AQI: {weather_info['aqi']})", font=("Microsoft YaHei", 14)).grid(row=3, column=0, sticky=W, padx=20)
+                
+                # PM2.5
+                ttk.Label(env_card, text="PM2.5", font=("Microsoft YaHei", 10, "bold"), foreground="gray").grid(row=2, column=1, sticky=W, padx=20)
+                ttk.Label(env_card, text=f"{weather_info['pm25']}", font=("Microsoft YaHei", 14)).grid(row=3, column=1, sticky=W, padx=20)
+
+                # 预报卡片
+                forecast_card = ttk.Labelframe(container, text="今日预报", padding=15)
+                forecast_card.pack(fill=X, pady=(0, 10))
+                ttk.Label(forecast_card, text=weather_info['forecast'], font=("Microsoft YaHei", 11), wraplength=700).pack(fill=X)
             
-        threading.Thread(target=update_weather, daemon=True).start()
+            self._ui(0, _update_ui)
+            
+        if threading.current_thread() is threading.main_thread():
+            threading.Thread(target=update_weather, daemon=True).start()
+        else:
+            update_weather()
         
     def refresh_poetry_data(self):
         """刷新诗词数据"""
         def update_poetry():
             poetry_info = self.features_manager.get_poetry_sentence()
-            text = f"""📖 今日诗词
-
-{poetry_info['full_text']}
-
-{'=' * 40}
-
-这首诗词来自古典文学，让我们在忙碌的生活中感受一份诗意与美好。"""
             
-            self.poetry_text.delete(1.0, tk.END)
-            self.poetry_text.insert(1.0, text)
+            def _update_ui():
+                self._clear_frame(self.poetry_scrolled.container)
+                container = self.poetry_scrolled.container
+                
+                # 诗词卡片
+                card = ttk.Frame(container, padding=30) # bootstyle="light"
+                card.pack(fill=BOTH, expand=True, padx=20, pady=20)
+                
+                if 'error' in poetry_info:
+                     ttk.Label(card, text=poetry_info['full_text'], font=("Microsoft YaHei", 12), bootstyle=DANGER).pack()
+                else:
+                     # 标题/朝代/作者
+                     if poetry_info.get('origin'):
+                         ttk.Label(card, text=f"《{poetry_info['origin']}》", font=("Microsoft YaHei", 16, "bold"), foreground="#8E44AD").pack(pady=(0, 10))
+                     
+                     if poetry_info.get('author'):
+                         ttk.Label(card, text=f"[{poetry_info.get('dynasty', '')}] {poetry_info['author']}", font=("Microsoft YaHei", 12), foreground="gray").pack(pady=(0, 20))
+                     
+                     # 内容
+                     content = poetry_info['content']
+                     # 尝试居中排版（如果包含标点）
+                     formatted_content = content.replace("。", "。\n").replace("；", "；\n").replace("？", "？\n").replace("！", "！\n")
+                     
+                     ttk.Label(card, text=formatted_content, font=("KaiTi", 24), justify=CENTER).pack(pady=20)
+                
+                ttk.Separator(container, orient=HORIZONTAL).pack(fill=X, padx=50, pady=20)
+                ttk.Label(container, text="这首诗词来自古典文学，让我们在忙碌的生活中感受一份诗意与美好。", 
+                         font=("Microsoft YaHei", 10), foreground="gray", justify=CENTER).pack()
+
+            self._ui(0, _update_ui)
             
-        threading.Thread(target=update_poetry, daemon=True).start()
+        if threading.current_thread() is threading.main_thread():
+            threading.Thread(target=update_poetry, daemon=True).start()
+        else:
+            update_poetry()
         
     def refresh_news_data(self):
         """刷新新闻数据"""
         def update_news():
             news_text = self.features_manager.get_60s_news()
-            formatted_text = f"""📰 60秒读懂世界
-
-{news_text}
-
-{'=' * 40}
-更新时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
             
-            self.news_text.delete(1.0, tk.END)
-            self.news_text.insert(1.0, formatted_text)
+            def _update_ui():
+                self._clear_frame(self.news_scrolled.container)
+                container = self.news_scrolled.container
+                
+                # 头部
+                header_frame = ttk.Frame(container)
+                header_frame.pack(fill=X, pady=(0, 20))
+                ttk.Label(header_frame, text="60秒读懂世界", font=("Microsoft YaHei", 16, "bold"), bootstyle="primary").pack(side=LEFT)
+                ttk.Label(header_frame, text=datetime.datetime.now().strftime('%Y-%m-%d'), font=("Microsoft YaHei", 12), bootstyle="secondary").pack(side=RIGHT)
+                
+                if "获取新闻失败" in news_text or "暂无" in news_text:
+                    ttk.Label(container, text=news_text, font=("Microsoft YaHei", 12), bootstyle=DANGER).pack(pady=20)
+                else:
+                    # 解析每行新闻
+                    lines = news_text.split('\n')
+                    for line in lines:
+                        if not line.strip(): continue
+                        
+                        card = ttk.Frame(container)
+                        card.pack(fill=X, pady=5)
+                        
+                        # 尝试分离序号和内容
+                        import re
+                        match = re.match(r'^(\d+)\.\s*(.*)', line)
+                        if match:
+                            idx, content = match.groups()
+                            # 序号
+                            ttk.Label(card, text=idx, font=("Arial", 12, "bold"), bootstyle="inverse-primary", width=3, anchor=CENTER).pack(side=LEFT, anchor=N)
+                            # 内容
+                            ttk.Label(card, text=content, font=("Microsoft YaHei", 11), wraplength=650).pack(side=LEFT, fill=X, expand=True, padx=10)
+                        else:
+                            ttk.Label(card, text=line, font=("Microsoft YaHei", 11), wraplength=700).pack(fill=X)
+
+            self._ui(0, _update_ui)
             
-        threading.Thread(target=update_news, daemon=True).start()
+        if threading.current_thread() is threading.main_thread():
+            threading.Thread(target=update_news, daemon=True).start()
+        else:
+            update_news()
         
     def refresh_all_data(self):
         """刷新所有数据"""
@@ -496,19 +683,10 @@ PM2.5：{weather_info['pm25']}
         """显示设置窗口"""
         settings_window = ttk.Toplevel(self.window)
         settings_window.title("功能设置")
-        settings_window.geometry("500x400")
+        settings_window.geometry("500x300")
         settings_window.resizable(False, False)
         settings_window.transient(self.window)
         settings_window.grab_set()
-        
-        # API设置
-        api_frame = ttk.LabelFrame(settings_window, text="API设置", padding=10)
-        api_frame.pack(fill=X, padx=10, pady=10)
-        
-        # 彩云天气API
-        ttk.Label(api_frame, text="彩云天气API Key:").pack(anchor=W)
-        caiyun_var = tk.StringVar(value=self.features_manager.caiyun_key)
-        ttk.Entry(api_frame, textvariable=caiyun_var, width=60).pack(fill=X, pady=(5, 10))
         
         # 位置设置
         location_frame = ttk.LabelFrame(settings_window, text="位置设置", padding=10)
@@ -518,15 +696,9 @@ PM2.5：{weather_info['pm25']}
         city_var = tk.StringVar(value=self.features_manager.city)
         ttk.Entry(location_frame, textvariable=city_var, width=60).pack(fill=X, pady=(5, 5))
         
-        ttk.Label(location_frame, text="坐标 (经度,纬度):").pack(anchor=W)
-        location_var = tk.StringVar(value=self.features_manager.location)
-        ttk.Entry(location_frame, textvariable=location_var, width=60).pack(fill=X, pady=(5, 10))
-        
         # 保存按钮
         def save_settings():
             self.features_manager.set_api_keys(
-                caiyun_key=caiyun_var.get(),
-                location=location_var.get(),
                 city=city_var.get()
             )
             messagebox.showinfo("设置", "设置已保存！")

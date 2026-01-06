@@ -15,33 +15,40 @@ class ALAPIManager:
     """ALAPI服务管理器"""
     
     def __init__(self):
-        self.token = "heniptlw1z24ua5pcavpcp9nnmubti"  # 默认测试Token
+        self.token = ""  # 移除硬编码Token，强制使用配置
+        self.city = "北京" # 默认城市
         self.base_url = "https://v2.alapi.cn/api"
         self.cache = {}
         
         # 服务配置
         self.services = {
             'daily_news': {'name': '每日早报', 'endpoint': '/zaobao'},
-            'weibo_hot': {'name': '微博热搜', 'endpoint': '/weibo/hot'},
             'hitokoto': {'name': '一言', 'endpoint': '/hitokoto'},
             'love_words': {'name': '土味情话', 'endpoint': '/qinghua'},
             'dog_diary': {'name': '舔狗日记', 'endpoint': '/dog'},
-            'daily_article': {'name': '每日一文', 'endpoint': '/mryw'}
+            'daily_article': {'name': '每日一文', 'endpoint': '/mryw'},
+            'poetry': {'name': '每日诗词', 'endpoint': 'custom_poetry'}
         }
         
         # 格式化方法映射
         self.formatters = {
             'daily_news': self._format_daily_news,
-            'weibo_hot': self._format_weibo_hot,
             'hitokoto': self._format_hitokoto,
             'love_words': self._format_love_words,
             'dog_diary': self._format_dog_diary,
-            'daily_article': self._format_daily_article
+            'daily_article': self._format_daily_article,
+            'poetry': self._format_poetry
         }
     
     def set_token(self, token):
         """设置API Token"""
         self.token = token
+
+    def set_city(self, city):
+        """设置城市"""
+        if city:
+            self.city = city
+
     
     def get_token(self):
         """获取API Token"""
@@ -53,6 +60,11 @@ class ALAPIManager:
             return None
         
         service = self.services[service_key]
+        
+        # 处理自定义服务
+        if service['endpoint'] == 'custom_poetry':
+            return self._fetch_poetry_data()
+            
         url = f"{self.base_url}{service['endpoint']}"
         
         # 准备请求参数
@@ -80,6 +92,19 @@ class ALAPIManager:
                 'error': True,
                 'message': f'网络请求失败: {str(e)}'
             }
+
+    def _fetch_poetry_data(self):
+        """获取诗词数据 (自定义)"""
+        try:
+            url = "https://v1.jinrishici.com/all.json"
+            response = requests.get(url, timeout=10, verify=False)
+            if response.ok:
+                return response.json()
+            else:
+                return {'error': True, 'message': '获取诗词失败'}
+        except Exception as e:
+            return {'error': True, 'message': f'网络请求失败: {str(e)}'}
+
     
     def format_service_data(self, service_key, data):
         """格式化服务数据"""
@@ -162,25 +187,20 @@ class ALAPIManager:
         formatted_text += f"📅 日期: {date_info}"
         
         return formatted_text
-    
-    def _format_weibo_hot(self, data):
-        """格式化微博热搜"""
-        formatted_text = "🔥 微博热搜\n\n"
+
+    def _format_poetry(self, data):
+        """格式化诗词数据"""
+        content = data.get("content", "")
+        author = data.get("author", "")
+        origin = data.get("origin", "")
         
-        hot_list = data.get('hot', [])
-        if not hot_list:
-            return formatted_text + "暂无热搜数据"
-        
-        for i, item in enumerate(hot_list[:10], 1):  # 只显示前10条
-            title = item.get('title', item.get('keyword', ''))
-            hot_value = item.get('hot', '')
-            formatted_text += f"{i}. {title}"
-            if hot_value:
-                formatted_text += f" ({hot_value})"
-            formatted_text += "\n\n"
-        
+        formatted_text = "📖 每日诗词\n\n"
+        formatted_text += f"{content}\n\n"
+        if author and origin:
+            formatted_text += f"—— {author}《{origin}》"
+            
         return formatted_text
-    
+
     def _format_hitokoto(self, data):
         """格式化一言"""
         formatted_text = "💭 一言\n\n"
@@ -240,14 +260,18 @@ class ALAPIManager:
         return formatted_text
 
 
+from alapi_widgets import InfoPushWidget
+
 class ALAPIWindow:
     """ALAPI服务窗口"""
     
-    def __init__(self, parent, alapi_manager):
+    def __init__(self, parent, alapi_manager, on_settings_click=None):
         self.parent = parent
         self.alapi_manager = alapi_manager
+        self.on_settings_click = on_settings_click
         self.window = None
         self.selected_services = []
+        self.info_widget = None
     
     def show_services(self, selected_services):
         """显示选中的服务"""
@@ -299,7 +323,9 @@ class ALAPIWindow:
         self.window.focus_force()
         
         # 加载选中服务的内容
-        self.load_selected_services()
+        if self.info_widget:
+            self.info_widget.selected_services = self.selected_services
+            self.info_widget.refresh_content()
     
     def setup_ui(self):
         """设置UI"""
@@ -307,120 +333,40 @@ class ALAPIWindow:
         main_frame = ttk.Frame(self.window)
         main_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
         
-        # 顶部按钮框架
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=X, pady=(0, 10))
+        # 顶部按钮框架 (用于关闭按钮，其他按钮在InfoPushWidget中)
+        # 为了保持一致性，我们可以在InfoPushWidget上方加一个包含关闭按钮的条，或者直接让InfoPushWidget占据主要空间
+        # 这里我们简单地把关闭按钮放在底部或者顶部单独一行
         
-        ttk.Button(button_frame, text="刷新内容", 
-                  command=self.refresh_content, 
-                  bootstyle=SUCCESS).pack(side=LEFT, padx=(0, 5))
+        top_frame = ttk.Frame(main_frame)
+        top_frame.pack(fill=X, pady=(0, 5))
         
-        ttk.Button(button_frame, text="设置", 
-                  command=self.show_settings, 
-                  bootstyle=SECONDARY).pack(side=LEFT, padx=5)
-        
-        ttk.Button(button_frame, text="关闭", 
+        ttk.Button(top_frame, text="关闭窗口", 
                   command=self.window.destroy, 
                   bootstyle=DANGER).pack(side=RIGHT)
-        
-        # 内容显示区域
-        content_frame = ttk.Frame(main_frame)
-        content_frame.pack(fill=BOTH, expand=True)
-        
-        # 创建滚动文本框
-        self.content_text = tk.Text(content_frame, wrap=tk.WORD, font=("Microsoft YaHei", 10))
-        scrollbar = ttk.Scrollbar(content_frame, orient=VERTICAL, command=self.content_text.yview)
-        self.content_text.configure(yscrollcommand=scrollbar.set)
-        
-        self.content_text.pack(side=LEFT, fill=BOTH, expand=True)
-        scrollbar.pack(side=RIGHT, fill=Y)
-    
-    def load_selected_services(self):
-        """加载选中服务的内容"""
-        if not self.selected_services:
-            self._update_content("请先在主界面选择要查看的服务")
-            return
-        
-        self._update_content("正在加载数据，请稍候...")
-        
-        # 在后台线程中加载数据
-        threading.Thread(target=self._load_services_data, daemon=True).start()
-    
-    def _load_services_data(self):
-        """在后台线程中加载服务数据"""
-        content = ""
-        
-        for service_key in self.selected_services:
-            service_name = self.alapi_manager.services.get(service_key, {}).get('name', service_key)
-            
-            try:
-                # 获取数据
-                data = self.alapi_manager.fetch_service_data(service_key)
-                
-                # 格式化数据
-                formatted_data = self.alapi_manager.format_service_data(service_key, data)
-                
-                content += formatted_data + "\n\n" + "="*50 + "\n\n"
-                
-            except Exception as e:
-                content += f"❌ 获取{service_name}失败: {str(e)}\n\n" + "="*50 + "\n\n"
-        
-        # 在主线程中更新UI
-        self.window.after(0, lambda: self._update_content(content))
-    
-    def _update_content(self, content):
-        """更新内容显示"""
-        if hasattr(self, 'content_text'):
-            self.content_text.delete(1.0, tk.END)
-            self.content_text.insert(1.0, content)
-    
+
+        # 使用 InfoPushWidget
+        self.info_widget = InfoPushWidget(main_frame, self.alapi_manager, on_settings_click=self.on_settings_click)
+        self.info_widget.pack(fill=BOTH, expand=True)
+
     def refresh_content(self):
         """刷新内容"""
-        self.load_selected_services()
+        if self.info_widget:
+            self.info_widget.refresh_content()
     
     def refresh_services(self, selected_services):
         """刷新指定服务"""
         self.selected_services = selected_services
-        self.refresh_content()
+        if self.info_widget:
+            self.info_widget.selected_services = selected_services
+            self.info_widget.refresh_content()
     
     def show_settings(self):
-        """显示设置窗口"""
-        settings_window = ttk.Toplevel(self.window)
-        settings_window.title("API设置")
-        settings_window.geometry("400x200")
-        settings_window.resizable(False, False)
-        
-        # 设置窗口图标
-        try:
-            settings_window.iconbitmap("app_icon.ico")
-        except:
-            pass
-        
-        # 主框架
-        main_frame = ttk.Frame(settings_window)
-        main_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
-        
-        # Token设置
-        ttk.Label(main_frame, text="ALAPI Token:", font=("Microsoft YaHei", 10)).pack(anchor=W, pady=(0, 5))
-        
-        token_entry = ttk.Entry(main_frame, width=50, font=("Microsoft YaHei", 9), show="*")
-        token_entry.pack(fill=X, pady=(0, 15))
-        token_entry.insert(0, self.alapi_manager.get_token())
-        
-        # 按钮框架
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=X, pady=(10, 0))
-        
-        def save_token():
-            token = token_entry.get().strip()
-            self.alapi_manager.set_token(token)
-            messagebox.showinfo("成功", "Token已保存")
-            settings_window.destroy()
-        
-        ttk.Button(button_frame, text="保存", 
-                  command=save_token, 
-                  bootstyle=SUCCESS).pack(side=LEFT)
-        
-        ttk.Button(button_frame, text="取消", 
-                  command=settings_window.destroy, 
-                  bootstyle=SECONDARY).pack(side=RIGHT, padx=(0, 10))
+        """显示设置窗口 (Deprecated, delegated to on_settings_click callback or managed externally)"""
+        # This method might be called internally if on_settings_click is not provided, 
+        # but in our case main.py provides it.
+        # If we need to keep it for backward compatibility:
+        if self.on_settings_click:
+            self.on_settings_click()
+        else:
+             # Fallback implementation if needed, or just pass
+             pass

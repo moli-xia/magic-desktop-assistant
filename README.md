@@ -1,8 +1,14 @@
-﻿# 魔力桌面助手 v2.0
+# 魔力桌面助手 v2.1
 
 一个功能丰富的桌面工具，集成了壁纸管理、屏保功能、信息推送和智能日历提醒系统。
 
 ## 🎯 主要功能
+
+### 🟣 悬浮球（桌面快捷入口）
+- **动态发光悬浮球**：可拖拽到任意位置，靠近屏幕边缘自动吸附并变为条形
+- **右键功能菜单**：快速显示/隐藏主窗口、切换皮肤、退出程序
+- **滚轮点击 AI 对话**：一键打开 AI 智能对话窗口
+- **多款皮肤**：未来光球 / 霓虹脉冲 / 经典蓝 / 简约白
 
 ### 💻 壁纸与屏保
 - **智能壁纸更换**：自动下载并设置高质量桌面壁纸
@@ -44,6 +50,10 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+### 使用提示（关闭/托盘/退出）
+- 点击主窗口右上角关闭按钮后，程序会**隐藏到系统托盘**（任务栏不再显示图标）。
+- 需要彻底退出时：在**托盘图标右键**或**悬浮球右键**选择“退出程序”。
 
 ## 📦 打包为可执行文件
 
@@ -156,17 +166,27 @@ dist/
 ## 📋 项目结构
 
 ```
-desk-wallpapers/
-├── main.py                     # 主程序入口
+magic-desktop-assistant/
+├── main.py                     # 主程序入口（含悬浮球/托盘/AI对话等）
+├── wallpaper_widget.py         # 壁纸模块
+├── screensaver_manager.py      # 屏保后台逻辑
+├── screensaver_widget.py       # 屏保UI/预览
+├── daily_news.py               # 每日资讯模块
+├── weather_service.py          # 天气服务
+├── integrated_features.py      # 集成功能模块
+├── alapi_services.py           # ALAPI服务封装
+├── alapi_widgets.py            # 信息推送等小组件
 ├── calendar_reminder.py        # 日历提醒模块
-├── reminder_notification.py    # 提醒通知模块
-├── daily_news.py              # 每日资讯模块
-├── integrated_features.py     # 集成功能模块
-├── alapi_services.py          # API服务模块
-├── app_icon.ico               # 应用图标
-├── requirements.txt           # 依赖列表
-├── build_exe.py              # 打包脚本
-└── README.md                 # 项目说明
+├── reminder_notification.py    # 提醒通知弹窗
+├── app_icon.ico                # 应用图标
+├── requirements.txt            # 依赖列表
+├── build_exe.py                # Windows打包脚本
+├── build_linux.py              # Linux打包脚本
+├── build_kylin.py              # 麒麟Linux打包脚本
+├── build_macos.py              # macOS打包脚本
+├── build_all_platforms.py      # 跨平台打包入口
+├── LICENSE
+└── README.md
 ```
 
 ## 💡 功能特色
@@ -243,7 +263,13 @@ desk-wallpapers/
 
 ## 🔄 版本历史
 
-### v2.0 (最新)
+### v2.1
+- ✨ 新增桌面悬浮球：拖拽、吸附变条形、右键功能菜单
+- 🎨 新增多款悬浮球皮肤并支持右键切换
+- 🧠 新增滚轮点击打开 AI 智能对话窗口
+- 🔧 优化关闭逻辑：关闭主窗口隐藏到托盘，保留右下角托盘图标
+
+### v2.0
 - ✨ 新增完整的日历提醒系统
 - 🎨 优化界面设计和用户体验
 - 📅 支持年份月份下拉选择
